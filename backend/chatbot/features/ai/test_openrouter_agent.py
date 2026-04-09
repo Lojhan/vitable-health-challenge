@@ -55,7 +55,7 @@ def test_openrouter_agent_generate_response_returns_content(monkeypatch):
     assert 'Manchester Triage System' in expected_system_prompt
     assert 'Do not diagnose' in expected_system_prompt
     assert '<EMERGENCY_OVERRIDE>' in expected_system_prompt
-    assert 'Current UTC datetime is' in expected_system_prompt
+    assert 'TEMPORAL ANCHORS' in expected_system_prompt
     assert 'Jane' in expected_system_prompt
     assert 'Gold' in expected_system_prompt
     assert 'Explicitly mention the user first name somewhere in the response' in expected_system_prompt
@@ -68,7 +68,7 @@ def test_openrouter_agent_generate_response_returns_content(monkeypatch):
     call_kwargs = mocked_create.await_args.kwargs
     assert call_kwargs['model'] == 'openai/gpt-4o-mini'
     assert call_kwargs['messages'][0]['role'] == 'system'
-    assert 'Current UTC datetime is' in call_kwargs['messages'][0]['content']
+    assert 'TEMPORAL ANCHORS' in call_kwargs['messages'][0]['content']
     assert call_kwargs['messages'][1] == {'role': 'user', 'content': 'Hello there'}
     assert call_kwargs['tools'] == OpenRouterAgent.get_tools()
 
@@ -254,6 +254,15 @@ def test_openrouter_agent_integration_executes_scheduling_tools(monkeypatch):
     assert mocked_create.await_count == 2
     assert Appointment.objects.filter(user_id=_pk(user)).count() == 1
 
+    second_call_messages = mocked_create.await_args_list[1].kwargs['messages']
+    tool_messages = [message for message in second_call_messages if message.get('role') == 'tool']
+    assert len(tool_messages) == 2
+
+    booking_tool_payload = json.loads(tool_messages[1]['content'])
+    assert booking_tool_payload['appointment_id'] > 0
+    assert booking_tool_payload['time_slot_utc'].startswith('2026-04-12T10:00:00')
+    assert booking_tool_payload['time_slot_human_utc'] == 'Sunday, April 12, 2026 at 10:00 AM UTC'
+
 
 def test_stream_response_splits_multiple_message_blocks(monkeypatch):
     monkeypatch.setenv('OPENROUTER_API_KEY', 'test-key')
@@ -434,3 +443,128 @@ def test_openrouter_agent_handles_multi_round_chained_tool_calls(monkeypatch):
     assert result == 'Appointment confirmed for next Monday.'
     assert mocked_create.await_count == 3
     assert Appointment.objects.filter(user_id=_pk(user)).count() == 1
+
+
+# ── Provider tool dispatch T17-T19 ────────────────────────────────────────────
+
+
+# T17
+@pytest.mark.django_db
+def test_execute_tool_call_list_providers_returns_provider_list(monkeypatch):
+    from datetime import timezone as dt_timezone
+    from chatbot.features.scheduling.models import Provider
+
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'test-key')
+    Provider.objects.create(
+        name='Dr. Alice Smith',
+        specialty='General Practice',
+        availability_dtstart=__import__('datetime').datetime(2026, 4, 10, 9, 0, 0, tzinfo=dt_timezone.utc),
+        availability_rrule='FREQ=DAILY;BYHOUR=9,10,11;BYMINUTE=0;BYSECOND=0',
+    )
+
+    agent = OpenRouterAgent(model='openai/gpt-4o-mini')
+    tool_call = SimpleNamespace(
+        id='tool-1',
+        function=SimpleNamespace(name='list_providers', arguments='{}'),
+    )
+
+    result = agent._execute_tool_call(tool_call)
+
+    assert isinstance(result, list)
+    # 5 seeded providers + 1 newly created = at least 1 with the target name
+    names = {p['name'] for p in result}
+    assert 'Dr. Alice Smith' in names
+    assert all('provider_id' in p and 'specialty' in p for p in result)
+
+
+# T18
+@pytest.mark.django_db
+def test_execute_tool_call_check_availability_passes_provider_id(monkeypatch):
+    from datetime import timezone as dt_timezone
+    from chatbot.features.scheduling.models import Provider
+
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'test-key')
+    provider = Provider.objects.create(
+        name='Dr. Alice Smith',
+        specialty='General Practice',
+        availability_dtstart=__import__('datetime').datetime(2026, 4, 10, 9, 0, 0, tzinfo=dt_timezone.utc),
+        availability_rrule='FREQ=DAILY;BYHOUR=9,10,11;BYMINUTE=0;BYSECOND=0',
+    )
+
+    agent = OpenRouterAgent(model='openai/gpt-4o-mini')
+    tool_call = SimpleNamespace(
+        id='tool-2',
+        function=SimpleNamespace(
+            name='check_availability',
+            arguments=json.dumps({
+                'date_range_str': '2026-04-10T09:00:00/2026-04-10T12:00:00',
+                'provider_id': provider.pk,
+            }),
+        ),
+    )
+
+    result = agent._execute_tool_call(tool_call)
+
+    assert isinstance(result, dict)
+    assert result['total_slots'] == 3
+    assert result['timezone'] == 'UTC'
+    assert result['appointment_duration_note'] == '*Appointments last 1h.'
+    assert result['summary_lines'] == ['Friday, April 10 (Morning): 9:00 AM - 12:00 PM']
+    assert result['grouped_human_utc'] == [
+        {
+            'day_iso_utc': '2026-04-10',
+            'day': 'Friday, April 10',
+            'period': 'morning',
+            'windows_utc': ['9:00 AM - 12:00 PM'],
+            'slot_count': 3,
+        }
+    ]
+
+
+# T19
+@pytest.mark.django_db(transaction=True)
+def test_execute_tool_call_book_appointment_passes_provider_id(monkeypatch):
+    from datetime import timezone as dt_timezone
+    from chatbot.features.scheduling.models import Provider
+
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'test-key')
+    user_model = get_user_model()
+    user = user_model.objects.create_user(
+        username='provider-dispatch-user',
+        password='safe-password-123',
+        insurance_tier='Gold',
+        medical_history={},
+    )
+    provider = Provider.objects.create(
+        name='Dr. Alice Smith',
+        specialty='General Practice',
+        availability_dtstart=__import__('datetime').datetime(2026, 4, 10, 9, 0, 0, tzinfo=dt_timezone.utc),
+        availability_rrule='FREQ=DAILY;BYHOUR=9,10,11;BYMINUTE=0;BYSECOND=0',
+    )
+
+    agent = OpenRouterAgent(model='openai/gpt-4o-mini', user_id=_pk(user))
+    tool_call = SimpleNamespace(
+        id='tool-3',
+        function=SimpleNamespace(
+            name='book_appointment',
+            arguments=json.dumps({
+                'time_slot': '2026-04-10T09:00:00',
+                'symptoms_summary': 'Sore throat',
+                'appointment_reason': 'Initial consult',
+                'provider_id': provider.pk,
+            }),
+        ),
+    )
+
+    result = agent._execute_tool_call(tool_call)
+    typed_result = cast(dict[str, Any], result)
+
+    assert typed_result['appointment_id'] > 0
+    booked = Appointment.objects.get(id=typed_result['appointment_id'])
+    assert cast(Any, booked).provider_id == _pk(provider)
+
+
+def test_list_providers_tool_is_registered_in_get_tools():
+    tools = OpenRouterAgent.get_tools()
+    tool_names = {tool['function']['name'] for tool in tools}
+    assert 'list_providers' in tool_names

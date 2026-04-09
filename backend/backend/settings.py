@@ -27,9 +27,7 @@ SECRET_KEY = 'django-insecure-7#au@2^+ec)5@n&gqk^c@9k0(u3a=)baj#*cxr46!m*oxospnh
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = [
-    '*',
-]
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',')
 
 
 # Application definition
@@ -64,14 +62,15 @@ CORS_ALLOWED_ORIGINS = [
     'http://192.168.1.105:5173',
 ]
 
-if DEBUG:
-    CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = (
+    os.getenv('CORS_ALLOW_ALL_ORIGINS', 'true' if DEBUG else 'false').lower() == 'true'
+)
 
-# CORS_ALLOWED_ORIGIN_REGEXES = [
-#     r'^http://192\.168\.\d{1,3}\.\d{1,3}:5173$',
-#     r'^http://10\.\d{1,3}\.\d{1,3}\.\d{1,3}:5173$',
-#     r'^http://172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}:5173$',
-# ]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r'^http://192\.168\.\d{1,3}\.\d{1,3}:\d+$',
+    r'^http://10\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$',
+    r'^http://172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}:\d+$',
+]
 
 CORS_EXPOSE_HEADERS = [
     'X-Chat-Session-Id',

@@ -16,6 +16,7 @@ class CalculateVisitCostInputSchema(BaseModel):
 
 class CheckAvailabilityInputSchema(BaseModel):
     date_range_str: str
+    provider_id: int | None = None
 
 
 class ResolveDatetimeReferenceInputSchema(BaseModel):
@@ -23,13 +24,19 @@ class ResolveDatetimeReferenceInputSchema(BaseModel):
 
 
 class BookAppointmentInputSchema(BaseModel):
+    appointment_id: int | None = None
     time_slot: str
     rrule_str: str | None = None
     symptoms_summary: str
     appointment_reason: str
+    provider_id: int | None = None
 
 
 class ListMyAppointmentsInputSchema(BaseModel):
+    pass
+
+
+class ListProvidersInputSchema(BaseModel):
     pass
 
 
@@ -43,6 +50,7 @@ class UpdateMyAppointmentInputSchema(BaseModel):
     rrule_str: str | None = None
     symptoms_summary: str | None = None
     appointment_reason: str | None = None
+    provider_id: int | None = None
 
 
 class BaseAgentInterface(ABC):
@@ -115,10 +123,22 @@ class BaseAgentInterface(ABC):
                 'function': {
                     'name': 'update_my_appointment',
                     'description': (
-                        'Update time slot and/or RRULE for an authenticated user '\
+                        'Update time slot, RRULE, or provider for an authenticated user '
                         'appointment.'
                     ),
                     'parameters': UpdateMyAppointmentInputSchema.model_json_schema(),
+                },
+            },
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'list_providers',
+                    'description': (
+                        'List all available healthcare providers with their name, '
+                        'specialty, and provider_id. Call this before scheduling to '
+                        'let the user choose a provider.'
+                    ),
+                    'parameters': ListProvidersInputSchema.model_json_schema(),
                 },
             },
         ]

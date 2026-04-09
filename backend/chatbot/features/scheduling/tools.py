@@ -9,7 +9,13 @@ from django.contrib.auth import get_user_model
 from django.db.models import DateTimeField
 from django.utils import timezone
 
-from chatbot.features.scheduling.models import Appointment
+from chatbot.features.scheduling.models import Appointment, Provider
+
+
+class ProviderSchema(TypedDict):
+    provider_id: int
+    name: str
+    specialty: str
 
 
 class SerializedAppointment(TypedDict):
@@ -20,6 +26,8 @@ class SerializedAppointment(TypedDict):
     rrule: str
     symptoms_summary: str
     appointment_reason: str
+    provider_id: int | None
+    provider_name: str | None
 
 
 class FutureAppointmentsPayload(TypedDict):
@@ -64,6 +72,18 @@ def _appointment_id(appointment: Appointment) -> int:
 
 def _appointment_time_slot_field() -> DateTimeField:
     return cast(DateTimeField, Appointment._meta.get_field('time_slot'))
+
+
+def _coerce_appointment_id(raw_value: object) -> int | None:
+    if isinstance(raw_value, int):
+        return raw_value
+
+    if isinstance(raw_value, str):
+        match = re.search(r'\d+', raw_value)
+        if match is not None:
+            return int(match.group(0))
+
+    return None
 
 
 def _normalize_datetime(value):
@@ -132,6 +152,8 @@ def _resolve_date_range_input(date_range_str: str) -> tuple:
 
 
 def _serialize_appointment(appointment: Appointment) -> SerializedAppointment:
+    provider_id: int | None = cast(int, appointment.provider_id) if appointment.provider_id is not None else None
+    provider_name: str | None = appointment.provider.name if appointment.provider_id is not None else None
     return {
         'appointment_id': _appointment_id(appointment),
         'title': appointment.title,
@@ -140,6 +162,8 @@ def _serialize_appointment(appointment: Appointment) -> SerializedAppointment:
         'rrule': appointment.rrule,
         'symptoms_summary': appointment.symptoms_summary,
         'appointment_reason': appointment.appointment_reason,
+        'provider_id': provider_id,
+        'provider_name': provider_name,
     }
 
 
@@ -175,7 +199,7 @@ def _format_future_appointments_payload(
     }
 
 
-def resolve_datetime_reference(datetime_reference: str) -> ResolveDatetimeReferenceResult:
+def resolve_datetime_reference(datetime_reference: str) -> dict: # or -> ResolveDatetimeReferenceResult if TypedDict is defined globally
     now = timezone.now().astimezone(dt_timezone.utc)
     normalized_reference = datetime_reference.strip().lower()
 
@@ -187,8 +211,10 @@ def resolve_datetime_reference(datetime_reference: str) -> ResolveDatetimeRefere
         }
 
     base_date = now.date()
-    next_weekday_match = re.search(
-        r'next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)',
+
+    # Catch optional prefixes and full/abbreviated weekday names
+    weekday_match = re.search(
+        r'\b(?:next\s+|this\s+|on\s+)?(monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri|saturday|sat|sunday|sun)\b',
         normalized_reference,
     )
 
@@ -196,24 +222,32 @@ def resolve_datetime_reference(datetime_reference: str) -> ResolveDatetimeRefere
         base_date = (now + timedelta(days=1)).date()
     elif 'today' in normalized_reference:
         base_date = now.date()
-    elif next_weekday_match:
+    elif weekday_match:
+        prefix = (weekday_match.group(0) or '').split()[0] if ' ' in weekday_match.group(0) else ''
+        day_str = weekday_match.groups()[-1]
+        
         weekdays = {
-            'monday': 0,
-            'tuesday': 1,
-            'wednesday': 2,
-            'thursday': 3,
-            'friday': 4,
-            'saturday': 5,
-            'sunday': 6,
+            'monday': 0, 'mon': 0,
+            'tuesday': 1, 'tue': 1,
+            'wednesday': 2, 'wed': 2,
+            'thursday': 3, 'thu': 3,
+            'friday': 4, 'fri': 4,
+            'saturday': 5, 'sat': 5,
+            'sunday': 6, 'sun': 6,
         }
-        requested_weekday = weekdays[next_weekday_match.group(1)]
+        requested_weekday = weekdays[day_str]
         days_ahead = (requested_weekday - now.weekday()) % 7
-        if days_ahead == 0:
+
+        # If today is Monday and the user explicitly said "next monday", jump 7 days ahead.
+        # Otherwise, if it's 0, it means today, which is technically the "closest" Monday.
+        if days_ahead == 0 and prefix == 'next':
             days_ahead = 7
+
         base_date = (now + timedelta(days=days_ahead)).date()
 
+    # Strip the resolved tokens so dateutil doesn't get confused and drift the date
     reference_without_relative_tokens = re.sub(
-        r'\b(tomorrow|today|next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b',
+        r'\b(?:tomorrow|today|(?:next\s+|this\s+|on\s+)?(?:monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri|saturday|sat|sunday|sun))\b',
         '',
         normalized_reference,
     ).strip()
@@ -228,18 +262,21 @@ def resolve_datetime_reference(datetime_reference: str) -> ResolveDatetimeRefere
         microsecond=0,
     )
 
-    try:
-        resolved = parse_datetime(
-            reference_without_relative_tokens or normalized_reference,
-            default=default_datetime,
-            fuzzy=True,
-        )
-    except (TypeError, ValueError):
-        return {
-            'resolved': False,
-            'reference': datetime_reference,
-            'reason': 'unable_to_parse',
-        }
+    if not reference_without_relative_tokens:
+        resolved = default_datetime
+    else:
+        try:
+            resolved = parse_datetime(
+                reference_without_relative_tokens,
+                default=default_datetime,
+                fuzzy=True,
+            )
+        except (TypeError, ValueError):
+            return {
+                'resolved': False,
+                'reference': datetime_reference,
+                'reason': 'unable_to_parse',
+            }
 
     resolved = _normalize_datetime(resolved)
     return {
@@ -249,22 +286,50 @@ def resolve_datetime_reference(datetime_reference: str) -> ResolveDatetimeRefere
         'resolved_from_now_utc': _display_datetime(now),
     }
 
+def list_providers() -> list[ProviderSchema]:
+    return [
+        {'provider_id': cast(int, cast(Any, p).pk), 'name': p.name, 'specialty': p.specialty}
+        for p in Provider.objects.all().order_by('name')
+    ]
 
-def check_availability(date_range_str: str) -> list[str]:
+
+def check_availability(date_range_str: str, provider_id: int | None = None) -> list[str]:
     start, end = _resolve_date_range_input(date_range_str)
 
-    occupied = set()
+    if provider_id is not None:
+        try:
+            provider = Provider.objects.get(pk=provider_id)
+        except Provider.DoesNotExist:
+            return []
+
+        provider_rule = rrulestr(
+            provider.availability_rrule, dtstart=provider.availability_dtstart
+        )
+        available_provider_slots = {
+            _display_datetime(_normalize_datetime(occ))
+            for occ in provider_rule.between(start, end, inc=True)
+        }
+
+        occupied: set[str] = set()
+        for appointment in Appointment.objects.filter(provider_id=provider_id):
+            rule = rrulestr(appointment.rrule, dtstart=appointment.time_slot)
+            for occurrence in rule.between(start, end, inc=True):
+                occupied.add(_display_datetime(_normalize_datetime(occurrence)))
+
+        return sorted(available_provider_slots - occupied)
+
+    occupied_open: set[str] = set()
     for appointment in Appointment.objects.all():
         rule = rrulestr(appointment.rrule, dtstart=appointment.time_slot)
         for occurrence in rule.between(start, end, inc=True):
             normalized_occurrence = _normalize_datetime(occurrence)
-            occupied.add(_display_datetime(normalized_occurrence))
+            occupied_open.add(_display_datetime(normalized_occurrence))
 
     available_slots = []
     current = start
     while current < end:
         candidate = _display_datetime(current)
-        if candidate not in occupied:
+        if candidate not in occupied_open:
             available_slots.append(candidate)
         current += timedelta(hours=1)
 
@@ -272,10 +337,11 @@ def check_availability(date_range_str: str) -> list[str]:
 
 
 def list_user_appointments(user_id: int) -> FutureAppointmentsPayload:
-    appointments = Appointment.objects.filter(
-        user_id=user_id,
-        time_slot__gte=timezone.now(),
-    ).order_by('time_slot', 'id')
+    appointments = (
+        Appointment.objects.select_related('provider')
+        .filter(user_id=user_id, time_slot__gte=timezone.now())
+        .order_by('time_slot', 'id')
+    )
     return _format_future_appointments_payload(list(appointments))
 
 
@@ -285,10 +351,56 @@ def book_appointment(
     rrule_str: str | None = None,
     symptoms_summary: str = '',
     appointment_reason: str = '',
+    appointment_id: int | str | None = None,
+    provider_id: int | None = None,
 ) -> Appointment:
     user_model = get_user_model()
     user = user_model.objects.get(id=user_id)
     parsed_time_slot = _parse_datetime_input(time_slot)
+
+    resolved_provider: Provider | None = None
+    if provider_id is not None:
+        try:
+            resolved_provider = Provider.objects.get(pk=provider_id)
+        except Provider.DoesNotExist:
+            raise ValueError(f'Provider {provider_id} does not exist')
+
+        provider_rule = rrulestr(
+            resolved_provider.availability_rrule,
+            dtstart=resolved_provider.availability_dtstart,
+        )
+        if not provider_rule.between(parsed_time_slot, parsed_time_slot, inc=True):
+            raise ValueError(
+                f'Time slot is not within provider {resolved_provider.name} availability'
+            )
+
+        conflict_qs = Appointment.objects.filter(
+            provider_id=provider_id, time_slot=parsed_time_slot
+        )
+        normalized_appointment_id_pre = _coerce_appointment_id(appointment_id)
+        if normalized_appointment_id_pre is not None:
+            conflict_qs = conflict_qs.exclude(id=normalized_appointment_id_pre)
+        if conflict_qs.exists():
+            raise ValueError(
+                f'Provider {resolved_provider.name} is already booked at {time_slot}'
+            )
+
+    normalized_appointment_id = _coerce_appointment_id(appointment_id)
+    if normalized_appointment_id is not None:
+        existing = Appointment.objects.filter(id=normalized_appointment_id, user_id=user_id).first()
+        if existing is not None:
+            existing.time_slot = parsed_time_slot
+            existing.rrule = rrule_str or existing.rrule
+            existing.symptoms_summary = symptoms_summary.strip() or existing.symptoms_summary
+            existing.appointment_reason = (
+                appointment_reason.strip() or existing.appointment_reason
+            )
+            update_fields = ['time_slot', 'rrule', 'symptoms_summary', 'appointment_reason']
+            if resolved_provider is not None:
+                existing.provider = resolved_provider
+                update_fields.append('provider')
+            existing.save(update_fields=update_fields)
+            return existing
 
     return Appointment.objects.create(
         user=user,
@@ -297,33 +409,57 @@ def book_appointment(
         rrule=rrule_str or 'FREQ=DAILY;COUNT=1',
         symptoms_summary=symptoms_summary.strip(),
         appointment_reason=appointment_reason.strip(),
+        provider=resolved_provider,
     )
 
 
-def cancel_user_appointment(user_id: int, appointment_id: int) -> CancelAppointmentResult:
+def cancel_user_appointment(
+    user_id: int,
+    appointment_id: int | str,
+) -> CancelAppointmentResult:
+    normalized_appointment_id = _coerce_appointment_id(appointment_id)
+    if normalized_appointment_id is None:
+        return {
+            'appointment_id': -1,
+            'cancelled': False,
+        }
+
     deleted_count, _ = Appointment.objects.filter(
-        id=appointment_id,
+        id=normalized_appointment_id,
         user_id=user_id,
     ).delete()
     return {
-        'appointment_id': appointment_id,
+        'appointment_id': normalized_appointment_id,
         'cancelled': deleted_count > 0,
     }
 
 
 def update_user_appointment(
     user_id: int,
-    appointment_id: int,
+    appointment_id: int | str,
     time_slot: str | None = None,
     rrule_str: str | None = None,
     symptoms_summary: str | None = None,
     appointment_reason: str | None = None,
+    provider_id: int | None = None,
 ) -> UpdateAppointmentResult:
-    appointment = Appointment.objects.filter(id=appointment_id, user_id=user_id).first()
+    normalized_appointment_id = _coerce_appointment_id(appointment_id)
+    if normalized_appointment_id is None:
+        return {
+            'appointment_id': -1,
+            'updated': False,
+            'reason': 'invalid_appointment_id',
+        }
+
+    appointment = (
+        Appointment.objects.select_related('provider')
+        .filter(id=normalized_appointment_id, user_id=user_id)
+        .first()
+    )
 
     if appointment is None:
         return {
-            'appointment_id': appointment_id,
+            'appointment_id': normalized_appointment_id,
             'updated': False,
             'reason': 'not_found',
         }
@@ -340,9 +476,31 @@ def update_user_appointment(
     if appointment_reason is not None:
         appointment.appointment_reason = appointment_reason.strip()
 
-    appointment.save(
-        update_fields=['time_slot', 'rrule', 'symptoms_summary', 'appointment_reason']
-    )
+    update_fields: list[str] = ['time_slot', 'rrule', 'symptoms_summary', 'appointment_reason']
+
+    if provider_id is not None:
+        try:
+            new_provider = Provider.objects.get(pk=provider_id)
+        except Provider.DoesNotExist:
+            return {
+                'appointment_id': normalized_appointment_id,
+                'updated': False,
+                'reason': 'invalid_provider_id',
+            }
+
+        effective_slot = _normalize_datetime(appointment.time_slot)
+        provider_rule = rrulestr(
+            new_provider.availability_rrule, dtstart=new_provider.availability_dtstart
+        )
+        if not provider_rule.between(effective_slot, effective_slot, inc=True):
+            raise ValueError(
+                f'Time slot is not within provider {new_provider.name} availability'
+            )
+
+        appointment.provider = new_provider
+        update_fields.append('provider')
+
+    appointment.save(update_fields=update_fields)
 
     return {
         'appointment_id': _appointment_id(appointment),
