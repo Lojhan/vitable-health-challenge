@@ -2,6 +2,12 @@
 
 A full-stack healthcare AI triage chatbot. Patients describe symptoms in a chat interface; the AI nurse triages them using the Manchester Triage System, can call scheduling tools, and flags life-threatening emergencies automatically.
 
+An example of the project running:
+
+https://github.com/user-attachments/assets/4fb1c588-0b3e-4380-bd15-d2a69e7268c8
+
+
+
 ---
 
 ## Stack
