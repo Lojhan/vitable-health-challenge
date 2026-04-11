@@ -1,20 +1,20 @@
 <script setup>
-import { ref } from 'vue'
-import ChatInterface from './components/ChatInterface.vue'
-import Login from './views/Login.vue'
-import Signup from './views/Signup.vue'
-import { useAuthStore } from './stores/auth'
+import { shallowRef } from 'vue'
+import ChatView from './features/chat/views/ChatView.vue'
+import LoginView from './features/auth/views/LoginView.vue'
+import SignupView from './features/auth/views/SignupView.vue'
+import { useAuthStore } from './features/auth/stores/auth'
 
 const authStore = useAuthStore()
-const showSignup = ref(false)
+const showSignup = shallowRef(false)
 </script>
 
 <template>
-  <ChatInterface v-if="authStore.isAuthenticated" />
-  <Signup
+  <ChatView v-if="authStore.isAuthenticated" />
+  <SignupView
     v-else-if="showSignup"
     @signup-success="showSignup = false"
     @go-to-login="showSignup = false"
   />
-  <Login v-else @go-to-signup="showSignup = true" />
+  <LoginView v-else @go-to-signup="showSignup = true" />
 </template>

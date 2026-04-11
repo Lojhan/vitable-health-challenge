@@ -1,147 +1,33 @@
 from abc import ABC, abstractmethod
-from typing import Literal
+from typing import ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from chatbot.features.ai.tool_registry import OPENAI_TOOL_SCHEMAS, TOOL_INPUT_SCHEMAS
+from chatbot.features.core.constants import InsuranceTier
+from chatbot.features.core.domain.validation import require_non_blank_text
+
+
+def _strip_and_require_text(value: str, field_name: str) -> str:
+    return require_non_blank_text(value, field=field_name)
 
 
 class UserProfileSchema(BaseModel):
     first_name: str
-    insurance_tier: Literal['Bronze', 'Silver', 'Gold']
+    insurance_tier: InsuranceTier
 
-
-class CalculateVisitCostInputSchema(BaseModel):
-    insurance_tier: Literal['Bronze', 'Silver', 'Gold']
-    visit_type: str
-
-
-class CheckAvailabilityInputSchema(BaseModel):
-    date_range_str: str
-    provider_id: int | None = None
-
-
-class ResolveDatetimeReferenceInputSchema(BaseModel):
-    datetime_reference: str
-
-
-class BookAppointmentInputSchema(BaseModel):
-    appointment_id: int | None = None
-    time_slot: str
-    rrule_str: str | None = None
-    symptoms_summary: str
-    appointment_reason: str
-    provider_id: int | None = None
-
-
-class ListMyAppointmentsInputSchema(BaseModel):
-    pass
-
-
-class ListProvidersInputSchema(BaseModel):
-    pass
-
-
-class CancelMyAppointmentInputSchema(BaseModel):
-    appointment_id: int
-
-
-class UpdateMyAppointmentInputSchema(BaseModel):
-    appointment_id: int
-    time_slot: str | None = None
-    rrule_str: str | None = None
-    symptoms_summary: str | None = None
-    appointment_reason: str | None = None
-    provider_id: int | None = None
+    @field_validator('first_name')
+    @classmethod
+    def validate_first_name(cls: type['UserProfileSchema'], value: str) -> str:
+        return _strip_and_require_text(value, 'first_name')
 
 
 class BaseAgentInterface(ABC):
+    TOOL_INPUT_SCHEMAS: ClassVar[dict[str, type[BaseModel]]] = TOOL_INPUT_SCHEMAS
+
     @classmethod
-    def get_tools(cls) -> list[dict]:
-        return [
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'calculate_visit_cost',
-                    'description': (
-                        'Calculate a visit cost based on insurance tier and visit type.'
-                    ),
-                    'parameters': CalculateVisitCostInputSchema.model_json_schema(),
-                },
-            },
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'resolve_datetime_reference',
-                    'description': (
-                        'Resolve relative datetime expressions (for example: '
-                        'tomorrow, next monday at 9am) into an absolute UTC ISO '
-                        'datetime string based on current server datetime.'
-                    ),
-                    'parameters': ResolveDatetimeReferenceInputSchema.model_json_schema(),
-                },
-            },
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'check_availability',
-                    'description': (
-                        'Check available appointment slots for a date range '
-                        'while honoring RRULE conflicts.'
-                    ),
-                    'parameters': CheckAvailabilityInputSchema.model_json_schema(),
-                },
-            },
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'book_appointment',
-                    'description': (
-                        'Book an appointment for the authenticated user and '
-                        'optionally store RRULE. Requires symptoms summary and '
-                        'appointment reason.'
-                    ),
-                    'parameters': BookAppointmentInputSchema.model_json_schema(),
-                },
-            },
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'list_my_appointments',
-                    'description': 'List appointments for the authenticated user.',
-                    'parameters': ListMyAppointmentsInputSchema.model_json_schema(),
-                },
-            },
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'cancel_my_appointment',
-                    'description': 'Cancel an appointment for the authenticated user.',
-                    'parameters': CancelMyAppointmentInputSchema.model_json_schema(),
-                },
-            },
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'update_my_appointment',
-                    'description': (
-                        'Update time slot, RRULE, or provider for an authenticated user '
-                        'appointment.'
-                    ),
-                    'parameters': UpdateMyAppointmentInputSchema.model_json_schema(),
-                },
-            },
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'list_providers',
-                    'description': (
-                        'List all available healthcare providers with their name, '
-                        'specialty, and provider_id. Call this before scheduling to '
-                        'let the user choose a provider.'
-                    ),
-                    'parameters': ListProvidersInputSchema.model_json_schema(),
-                },
-            },
-        ]
+    def get_tools(cls: type['BaseAgentInterface']) -> list[dict[str, object]]:
+        return OPENAI_TOOL_SCHEMAS
 
     @abstractmethod
     async def generate_response(
@@ -150,3 +36,20 @@ class BaseAgentInterface(ABC):
         history: list[dict[str, str]] | None = None,
     ) -> str:
         """Generate an AI response for the provided prompt."""
+
+    @classmethod
+    def validate_tool_arguments(
+        cls: type['BaseAgentInterface'],
+        tool_name: str,
+        arguments: dict[str, object],
+    ) -> dict[str, object]:
+        schema = cls.TOOL_INPUT_SCHEMAS.get(tool_name)
+        if schema is None:
+            raise ValueError(f'Unsupported tool call: {tool_name}')
+
+        try:
+            model = schema.model_validate(arguments)
+        except Exception as error:
+            raise ValueError(f'Invalid arguments for tool call: {tool_name}') from error
+
+        return model.model_dump(mode='json')

@@ -2,7 +2,7 @@ import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { apiClient, getApiBaseUrl } from '../lib/apiClient'
-import { useAuthStore } from './auth'
+import { useAuthStore } from '../features/auth/stores/auth'
 
 const TYPEWRITER_DELAY_MS = 16
 const FRONTEND_BURST_WINDOW_MS = 1000
@@ -52,7 +52,6 @@ export const useChatStore = defineStore('chat', () => {
   const pendingPromptBurst = ref([])
   let promptBurstTimerId = null
   let isSendingPromptBurst = false
-  let promptBurstAssistantMessage = null
 
   const conversationSummaries = computed(() => (
     conversations.value
@@ -136,6 +135,7 @@ export const useChatStore = defineStore('chat', () => {
       messages: session.messages.map((message) => ({
         id: buildMessageId(),
         role: message.role,
+        messageKind: message.message_kind ?? 'text',
         content: message.content,
       })),
     }))
@@ -281,6 +281,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value.push({
       id: buildMessageId(),
       role,
+      messageKind: 'text',
       content,
     })
 
@@ -309,22 +310,6 @@ export const useChatStore = defineStore('chat', () => {
     resolveBurstItems(pendingPromptBurst.value)
     pendingPromptBurst.value = []
     isSendingPromptBurst = false
-    promptBurstAssistantMessage = null
-  }
-
-  function ensurePromptBurstAssistantMessage() {
-    if (promptBurstAssistantMessage) {
-      return promptBurstAssistantMessage
-    }
-
-    promptBurstAssistantMessage = {
-      id: buildMessageId(),
-      role: 'assistant',
-      content: '...',
-    }
-    messages.value.push(promptBurstAssistantMessage)
-    updateActiveConversationMeta()
-    return promptBurstAssistantMessage
   }
 
   function schedulePromptBurstSend() {
@@ -353,7 +338,14 @@ export const useChatStore = defineStore('chat', () => {
 
     pendingPromptBurst.value = []
     const prompt = burstItems.map((item) => item.prompt).join(FRONTEND_BURST_SEPARATOR_TOKEN)
-    let assistantMessage = ensurePromptBurstAssistantMessage()
+    const assistantMessage = {
+      id: buildMessageId(),
+      role: 'assistant',
+      messageKind: 'text',
+      content: '',
+    }
+    messages.value.push(assistantMessage)
+    updateActiveConversationMeta()
 
     activeStreamCount.value += 1
     isSendingPromptBurst = true
@@ -432,7 +424,7 @@ export const useChatStore = defineStore('chat', () => {
           }
 
           if (chunk === MERGED_IN_PREVIOUS_RESPONSE_TOKEN) {
-            if (assistantMessage.content === '...') {
+            if (!assistantMessage.content) {
               messages.value = messages.value.filter((message) => message.id !== assistantMessage.id)
               updateActiveConversationMeta()
             }
@@ -440,25 +432,12 @@ export const useChatStore = defineStore('chat', () => {
             return
           }
 
-          if (assistantMessage.content === '...') {
-            assistantMessage.content = ''
-          } else if (assistantMessage.content.trim().length > 0) {
-            assistantMessage = {
-              id: buildMessageId(),
-              role: 'assistant',
-              content: '',
-            }
-            messages.value.push(assistantMessage)
-            promptBurstAssistantMessage = assistantMessage
-            updateActiveConversationMeta()
-          }
-
           await streamWithTypewriter(assistantMessage, chunk)
           updateActiveConversationMeta()
         }
       }
 
-      if (!receivedAtLeastOneChunk && assistantMessage.content === '...') {
+      if (!receivedAtLeastOneChunk && !assistantMessage.content) {
         assistantMessage.content =
           'I could not generate a response. Please try again.'
         updateActiveConversationMeta()
@@ -466,7 +445,7 @@ export const useChatStore = defineStore('chat', () => {
 
       resolveBurstItems(burstItems)
     } catch (_error) {
-      if (assistantMessage.content === '...') {
+      if (!assistantMessage.content) {
         assistantMessage.content = 'I could not generate a response. Please try again.'
         updateActiveConversationMeta()
       }
@@ -475,7 +454,6 @@ export const useChatStore = defineStore('chat', () => {
     } finally {
       activeStreamCount.value = Math.max(0, activeStreamCount.value - 1)
       isSendingPromptBurst = false
-      promptBurstAssistantMessage = null
       updateActiveConversationMeta()
 
       if (pendingPromptBurst.value.length > 0) {
@@ -512,7 +490,6 @@ export const useChatStore = defineStore('chat', () => {
     streamError.value = ''
     appendMessage('user', prompt)
     updateActiveConversationMeta(buildConversationTitle(prompt))
-    ensurePromptBurstAssistantMessage()
 
     await new Promise((resolve) => {
       pendingPromptBurst.value.push({ prompt, resolve })

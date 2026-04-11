@@ -10,24 +10,27 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
-from pathlib import Path
 import getpass
 import os
+from pathlib import Path
+
+from .runtime_config import load_runtime_settings
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+RUNTIME_SETTINGS = load_runtime_settings(os.environ, getpass.getuser())
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-7#au@2^+ec)5@n&gqk^c@9k0(u3a=)baj#*cxr46!m*oxospnh'
+SECRET_KEY = RUNTIME_SETTINGS.secret_key
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = RUNTIME_SETTINGS.debug
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',')
+ALLOWED_HOSTS = RUNTIME_SETTINGS.allowed_hosts
 
 
 # Application definition
@@ -40,6 +43,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'corsheaders',
+    'chatbot.features.core.apps.CoreConfig',
     'chatbot.features.users.apps.UsersConfig',
     'chatbot.features.scheduling.apps.SchedulingConfig',
     'chatbot.features.chat.apps.ChatConfig',
@@ -62,9 +66,7 @@ CORS_ALLOWED_ORIGINS = [
     'http://192.168.1.105:5173',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = (
-    os.getenv('CORS_ALLOW_ALL_ORIGINS', 'true' if DEBUG else 'false').lower() == 'true'
-)
+CORS_ALLOW_ALL_ORIGINS = RUNTIME_SETTINGS.cors_allow_all_origins
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r'^http://192\.168\.\d{1,3}\.\d{1,3}:\d+$',
@@ -102,11 +104,11 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('POSTGRES_DB', 'chatbot_db'),
-        'USER': os.getenv('POSTGRES_USER', getpass.getuser()),
-        'PASSWORD': os.getenv('POSTGRES_PASSWORD', ''),
-        'HOST': os.getenv('POSTGRES_HOST', ''),
-        'PORT': os.getenv('POSTGRES_PORT', ''),
+        'NAME': RUNTIME_SETTINGS.database.name,
+        'USER': RUNTIME_SETTINGS.database.user,
+        'PASSWORD': RUNTIME_SETTINGS.database.password,
+        'HOST': RUNTIME_SETTINGS.database.host,
+        'PORT': RUNTIME_SETTINGS.database.port,
     }
 }
 

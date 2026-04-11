@@ -1,0 +1,34 @@
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+exclude = [
+  "chatbot/features/**/migrations",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "B",
+  "UP",
+  "ANN",
+  "RUF",
+]
+ignore = [
+  "ANN401",
+  "E501",
+  "B024",
+  "RUF012",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"chatbot/**/tests/**/*.py" = ["ANN", "UP017"]
+"chatbot/**/test_*.py" = ["ANN", "UP017"]
+"chatbot/test_*.py" = ["ANN", "UP017"]
+"manage.py" = ["ANN201"]
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+line-ending = "lf"

@@ -1,23 +1,25 @@
-import os
-import threading
-import time
+import inspect
 from collections.abc import Iterable
 from typing import Any, cast
 
 import pytest
+from asgiref.sync import sync_to_async
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.http import StreamingHttpResponse
-from django.test import Client
+from django.test.utils import CaptureQueriesContext
 
-from chatbot.api import _stream_async_generator
-from chatbot.api import _to_sse_chunk
-from chatbot.api import FRONTEND_BURST_SEPARATOR_TOKEN
-from chatbot.api import MERGED_IN_PREVIOUS_RESPONSE_TOKEN
-from chatbot.features.chat.models import ChatMessage
-from chatbot.features.chat.models import ChatSession
+from chatbot.api import MERGED_IN_PREVIOUS_RESPONSE_TOKEN, _serialize_chat_session
+from chatbot.features.chat.application.use_cases.prepare_chat_turn import PrepareChatTurnUseCase
+from chatbot.features.chat.composition import (
+    build_get_chat_history_sync_use_case,
+    build_get_chat_history_use_case,
+)
+from chatbot.features.chat.message_burst import FRONTEND_BURST_SEPARATOR_TOKEN
+from chatbot.features.chat.models import ChatMessage, ChatSession
+from chatbot.features.chat.sse import stream_async_generator, to_sse_chunk
 from chatbot.features.scheduling.models import Appointment
-from chatbot.features.scheduling.tools import book_appointment
-from chatbot.features.scheduling.tools import list_user_appointments
+from chatbot.features.scheduling.tools import book_appointment, list_user_appointments
 
 
 def _pk(instance: object) -> int:
@@ -72,7 +74,7 @@ def test_post_api_chat_authenticated_persists_session_history(client, monkeypatc
 
             yield 'follow-up'
 
-    monkeypatch.setattr('chatbot.api.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
 
     token_response = client.post(
         '/api/auth/token',
@@ -120,28 +122,32 @@ def test_post_api_chat_authenticated_persists_session_history(client, monkeypatc
     ]
 
     stored_messages = list(
-        ChatMessage.objects.filter(session_id=session_id).values('role', 'content')
+        ChatMessage.objects.filter(session_id=session_id).values(
+            'role',
+            'message_kind',
+            'content',
+        )
     )
     assert stored_messages == [
-        {'role': 'user', 'content': 'hello'},
-        {'role': 'assistant', 'content': 'chunk-1chunk-2'},
-        {'role': 'user', 'content': 'need another answer'},
-        {'role': 'assistant', 'content': 'follow-up'},
+        {'role': 'user', 'message_kind': 'text', 'content': 'hello'},
+        {'role': 'assistant', 'message_kind': 'text', 'content': 'chunk-1chunk-2'},
+        {'role': 'user', 'message_kind': 'text', 'content': 'need another answer'},
+        {'role': 'assistant', 'message_kind': 'text', 'content': 'follow-up'},
     ]
 
 
 def test_sse_chunk_mapping_format():
-    assert _to_sse_chunk('hello') == 'data: hello\n\n'
+    assert to_sse_chunk('hello') == 'data: hello\n\n'
 
 
 def test_sse_chunk_mapping_format_multiline_content():
-    assert _to_sse_chunk('line 1\nline 2') == 'data: line 1\ndata: line 2\n\n'
+    assert to_sse_chunk('line 1\nline 2') == 'data: line 1\ndata: line 2\n\n'
 
 
 @pytest.mark.django_db(transaction=True)
 def test_post_api_chat_splits_separator_token_into_individual_user_messages(client, monkeypatch):
     user_model = get_user_model()
-    user = user_model.objects.create_user(
+    _user = user_model.objects.create_user(
         username='split-user',
         password='safe-password-123',
         first_name='Jordan',
@@ -159,8 +165,8 @@ def test_post_api_chat_splits_separator_token_into_individual_user_messages(clie
             FakeAgent.seen_prompts.append(prompt)
             yield 'token-split-ok'
 
-    monkeypatch.setattr('chatbot.api.OpenRouterAgent', FakeAgent)
-    monkeypatch.setattr('chatbot.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
+    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
 
     token_response = client.post(
         '/api/auth/token',
@@ -185,13 +191,17 @@ def test_post_api_chat_splits_separator_token_into_individual_user_messages(clie
 
     session_id = int(response['X-Chat-Session-Id'])
     stored_messages = list(
-        ChatMessage.objects.filter(session_id=session_id).values('role', 'content')
+        ChatMessage.objects.filter(session_id=session_id).values(
+            'role',
+            'message_kind',
+            'content',
+        )
     )
     assert stored_messages == [
-        {'role': 'user', 'content': 'i'},
-        {'role': 'user', 'content': 'have'},
-        {'role': 'user', 'content': 'fever'},
-        {'role': 'assistant', 'content': 'token-split-ok'},
+        {'role': 'user', 'message_kind': 'text', 'content': 'i'},
+        {'role': 'user', 'message_kind': 'text', 'content': 'have'},
+        {'role': 'user', 'message_kind': 'text', 'content': 'fever'},
+        {'role': 'assistant', 'message_kind': 'text', 'content': 'token-split-ok'},
     ]
 
 
@@ -210,7 +220,7 @@ def test_stream_async_generator_runs_on_close_callback_and_collects_chunks():
         collected_chunks.extend(chunks)
 
     streamed = b''.join(
-        _stream_async_generator(
+        stream_async_generator(
             generator(),
             on_close=on_close,
             on_complete=on_complete,
@@ -292,20 +302,15 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
                     yield 'I am missing your symptom context. Please summarize symptoms first.'
                     return
 
-                previous_async_unsafe = os.environ.get('DJANGO_ALLOW_ASYNC_UNSAFE')
-                os.environ['DJANGO_ALLOW_ASYNC_UNSAFE'] = 'true'
-                try:
-                    appointment = book_appointment(
+                appointment = await sync_to_async(
+                    book_appointment,
+                    thread_sensitive=True,
+                )(
                         user_id=self.user_id,
                         time_slot='next monday 09:00',
                         symptoms_summary='sore throat, fever and cough',
                         appointment_reason=symptom_line,
                     )
-                finally:
-                    if previous_async_unsafe is None:
-                        del os.environ['DJANGO_ALLOW_ASYNC_UNSAFE']
-                    else:
-                        os.environ['DJANGO_ALLOW_ASYNC_UNSAFE'] = previous_async_unsafe
                 FakeAgent.booked_appointment_id = _pk(appointment)
                 yield (
                     f'Appointment booked for next Monday at 9:00 AM UTC. '
@@ -314,15 +319,10 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
                 return
 
             if 'what are my future appointments' in prompt_lower:
-                previous_async_unsafe = os.environ.get('DJANGO_ALLOW_ASYNC_UNSAFE')
-                os.environ['DJANGO_ALLOW_ASYNC_UNSAFE'] = 'true'
-                try:
-                    payload = list_user_appointments(user_id=self.user_id)
-                finally:
-                    if previous_async_unsafe is None:
-                        del os.environ['DJANGO_ALLOW_ASYNC_UNSAFE']
-                    else:
-                        os.environ['DJANGO_ALLOW_ASYNC_UNSAFE'] = previous_async_unsafe
+                payload = await sync_to_async(
+                    list_user_appointments,
+                    thread_sensitive=True,
+                )(user_id=self.user_id)
                 if payload['count'] == 0:
                     yield payload['summary']
                     return
@@ -333,7 +333,7 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
 
             yield 'Could you rephrase that so I can help?'
 
-    monkeypatch.setattr('chatbot.api.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
 
     token_response = client.post(
         '/api/auth/token',
@@ -354,7 +354,7 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
     session_id = None
     streamed_responses = []
 
-    for index, prompt in enumerate(prompts):
+    for _index, prompt in enumerate(prompts):
         payload: dict[str, str | int] = {'message': prompt}
         if session_id is not None:
             payload['session_id'] = session_id
@@ -395,14 +395,23 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
         assert history[-1] == {'role': 'assistant', 'content': previous_response}
 
     stored_messages = list(
-        ChatMessage.objects.filter(session_id=session_id).values('role', 'content')
+        ChatMessage.objects.filter(session_id=session_id).values(
+            'role',
+            'message_kind',
+            'content',
+        )
     )
     assert len(stored_messages) == len(prompts) * 2
 
     for index, prompt in enumerate(prompts):
-        assert stored_messages[(index * 2)] == {'role': 'user', 'content': prompt}
+        assert stored_messages[(index * 2)] == {
+            'role': 'user',
+            'message_kind': 'text',
+            'content': prompt,
+        }
         assert stored_messages[(index * 2) + 1] == {
             'role': 'assistant',
+            'message_kind': 'text',
             'content': streamed_responses[index],
         }
 
@@ -461,11 +470,13 @@ def test_get_chat_history_and_sync_authenticated(client):
     assert payload['sessions'][0]['messages'] == [
         {
             'role': 'user',
+            'message_kind': 'text',
             'content': 'severe headache',
             'created_at': payload['sessions'][0]['messages'][0]['created_at'],
         },
         {
             'role': 'assistant',
+            'message_kind': 'text',
             'content': 'please hydrate',
             'created_at': payload['sessions'][0]['messages'][1]['created_at'],
         },
@@ -483,6 +494,75 @@ def test_get_chat_history_and_sync_authenticated(client):
 
 
 @pytest.mark.django_db
+def test_serialize_chat_session_uses_prefetched_messages_without_extra_queries():
+    user_model = get_user_model()
+    user = user_model.objects.create_user(
+        username='prefetch-user',
+        password='safe-password-123',
+        first_name='Pat',
+        insurance_tier='Silver',
+        medical_history={},
+    )
+    session = ChatSession.objects.create(user=user)
+    ChatMessage.objects.create(session=session, role='user', content='need help quickly')
+    ChatMessage.objects.create(session=session, role='assistant', content='how can I help?')
+
+    prefetched_session = ChatSession.objects.prefetch_related('messages').get(id=_pk(session))
+
+    with CaptureQueriesContext(connection) as captured_queries:
+        payload = _serialize_chat_session(prefetched_session)
+
+    messages = cast(list[dict[str, object]], payload['messages'])
+
+    assert len(captured_queries) == 0
+    assert payload['title'] == 'need help quickly'
+    assert [message['role'] for message in messages] == ['user', 'assistant']
+
+
+@pytest.mark.django_db
+def test_get_chat_history_sync_use_case_aggregates_user_counts_and_latest_update():
+    user_model = get_user_model()
+    user = user_model.objects.create_user(
+        username='sync-query-user',
+        password='safe-password-123',
+        first_name='Sam',
+        insurance_tier='Silver',
+        medical_history={},
+    )
+    session = ChatSession.objects.create(user=user)
+    ChatMessage.objects.create(session=session, role='user', content='one')
+    ChatMessage.objects.create(session=session, role='assistant', content='two')
+
+    payload = build_get_chat_history_sync_use_case().execute(user_id=_pk(user))
+
+    assert payload['session_count'] == 1
+    assert payload['message_count'] == 2
+    assert payload['latest_updated_at'] is not None
+
+
+@pytest.mark.django_db
+def test_get_chat_history_use_case_serializes_user_sessions_in_desc_order():
+    user_model = get_user_model()
+    user = user_model.objects.create_user(
+        username='history-query-user',
+        password='safe-password-123',
+        first_name='Riley',
+        insurance_tier='Silver',
+        medical_history={},
+    )
+    first = ChatSession.objects.create(user=user)
+    second = ChatSession.objects.create(user=user)
+    ChatMessage.objects.create(session=first, role='user', content='first')
+    ChatMessage.objects.create(session=second, role='user', content='second')
+
+    payload = build_get_chat_history_use_case(
+        serialize_session=lambda session: {'id': _pk(session)},
+    ).execute(user_id=_pk(user))
+
+    assert payload['sessions'] == [{'id': _pk(second)}, {'id': _pk(first)}]
+
+
+@pytest.mark.django_db
 def test_delete_chat_session_only_for_owner(client):
     user_model = get_user_model()
     owner = user_model.objects.create_user(
@@ -492,7 +572,7 @@ def test_delete_chat_session_only_for_owner(client):
         insurance_tier='Silver',
         medical_history={},
     )
-    outsider = user_model.objects.create_user(
+    _outsider = user_model.objects.create_user(
         username='outsider-user',
         password='safe-password-123',
         first_name='Outsider',
@@ -533,9 +613,9 @@ def test_delete_chat_session_only_for_owner(client):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_post_api_chat_debounce_merges_quick_successive_messages(client, monkeypatch):
+def test_post_api_chat_handles_quick_successive_messages_without_merged_token(client, monkeypatch):
     user_model = get_user_model()
-    user = user_model.objects.create_user(
+    _user = user_model.objects.create_user(
         username='debounce-user',
         password='safe-password-123',
         first_name='Deb',
@@ -553,8 +633,8 @@ def test_post_api_chat_debounce_merges_quick_successive_messages(client, monkeyp
             FakeAgent.seen_prompts.append(prompt)
             yield 'debounced-assistant-response'
 
-    monkeypatch.setattr('chatbot.api.OpenRouterAgent', FakeAgent)
-    monkeypatch.setattr('chatbot.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0.2)
+    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0.2)
 
     token_response = client.post(
         '/api/auth/token',
@@ -573,53 +653,61 @@ def test_post_api_chat_debounce_merges_quick_successive_messages(client, monkeyp
     _ = _streaming_body(initial_response)
     session_id = int(initial_response['X-Chat-Session-Id'])
 
-    streamed_by_request = {}
-
-    def send_in_thread(key: str, message: str) -> None:
-        thread_client = Client()
-        response = thread_client.post(
-            '/api/chat',
-            data={'message': message, 'session_id': session_id},
-            content_type='application/json',
-            HTTP_AUTHORIZATION=f'Bearer {access}',
-        )
-        assert isinstance(response, StreamingHttpResponse)
-        streamed_by_request[key] = _streaming_body(response)
-
-    first_thread = threading.Thread(
-        target=send_in_thread,
-        args=('first', 'first follow-up detail'),
+    first_follow_up = client.post(
+        '/api/chat',
+        data={'message': 'first follow-up detail', 'session_id': session_id},
+        content_type='application/json',
+        HTTP_AUTHORIZATION=f'Bearer {access}',
     )
-    second_thread = threading.Thread(
-        target=send_in_thread,
-        args=('second', 'second follow-up detail'),
+    second_follow_up = client.post(
+        '/api/chat',
+        data={'message': 'second follow-up detail', 'session_id': session_id},
+        content_type='application/json',
+        HTTP_AUTHORIZATION=f'Bearer {access}',
     )
 
-    first_thread.start()
-    time.sleep(0.05)
-    second_thread.start()
-    first_thread.join()
-    second_thread.join()
+    assert first_follow_up.status_code == 200
+    assert second_follow_up.status_code == 200
+    assert _streaming_body(first_follow_up) == 'data: debounced-assistant-response\n\n'
+    assert _streaming_body(second_follow_up) == 'data: debounced-assistant-response\n\n'
 
-    streamed_payloads = list(streamed_by_request.values())
-    assert len(streamed_payloads) == 2
-    assert 'data: debounced-assistant-response\n\n' in streamed_payloads
-    assert f'data: {MERGED_IN_PREVIOUS_RESPONSE_TOKEN}\n\n' in streamed_payloads
-
-    assert len(FakeAgent.seen_prompts) == 2
-    merged_prompt = FakeAgent.seen_prompts[1]
-    assert merged_prompt == 'first follow-up detail second follow-up detail'
+    assert FakeAgent.seen_prompts[0] == 'starting context'
+    assert 'first follow-up detail' in FakeAgent.seen_prompts[1]
+    assert any(
+        'second follow-up detail' in prompt
+        for prompt in FakeAgent.seen_prompts[1:]
+    )
 
     stored_messages = list(
-        ChatMessage.objects.filter(session_id=session_id).values('role', 'content')
+        ChatMessage.objects.filter(session_id=session_id).values(
+            'role',
+            'message_kind',
+            'content',
+        )
     )
-    assert stored_messages == [
-        {'role': 'user', 'content': 'starting context'},
-        {'role': 'assistant', 'content': 'debounced-assistant-response'},
-        {'role': 'user', 'content': 'first follow-up detail'},
-        {'role': 'user', 'content': 'second follow-up detail'},
-        {'role': 'assistant', 'content': 'debounced-assistant-response'},
-    ]
+    assert stored_messages[0] == {
+        'role': 'user',
+        'message_kind': 'text',
+        'content': 'starting context',
+    }
+    assert stored_messages[1] == {
+        'role': 'assistant',
+        'message_kind': 'text',
+        'content': 'debounced-assistant-response',
+    }
+    follow_up_contents = {
+        message['content']
+        for message in stored_messages
+        if message['role'] == 'user'
+    }
+    assert 'first follow-up detail' in follow_up_contents
+    assert 'second follow-up detail' in follow_up_contents
+    assert sum(1 for message in stored_messages if message['role'] == 'assistant') == 3
+
+
+def test_prepare_chat_turn_has_no_blocking_sleep_call():
+    source = inspect.getsource(PrepareChatTurnUseCase.execute)
+    assert 'time.sleep' not in source
 
 
 @pytest.mark.django_db(transaction=True)
@@ -643,8 +731,8 @@ def test_post_api_chat_defers_connective_fragments_until_meaningful_message(clie
             FakeAgent.seen_prompts.append(prompt)
             yield 'fragment-merged-response'
 
-    monkeypatch.setattr('chatbot.api.OpenRouterAgent', FakeAgent)
-    monkeypatch.setattr('chatbot.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
+    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
 
     token_response = client.post(
         '/api/auth/token',
@@ -682,3 +770,72 @@ def test_post_api_chat_defers_connective_fragments_until_meaningful_message(clie
     assert third_streamed == 'data: fragment-merged-response\n\n'
 
     assert FakeAgent.seen_prompts == ['i have fever']
+
+
+@pytest.mark.django_db(transaction=True)
+def test_post_api_chat_request_id_is_idempotent_for_retried_turn(client, monkeypatch):
+    user_model = get_user_model()
+    user_model.objects.create_user(
+        username='idempotent-chat-user',
+        password='safe-password-123',
+        first_name='Retry',
+        insurance_tier='Silver',
+        medical_history={},
+    )
+
+    class FakeAgent:
+        seen_prompts = []
+
+        def __init__(self, **_kwargs):
+            pass
+
+        async def stream_response(self, prompt: str, history=None):
+            _ = history
+            FakeAgent.seen_prompts.append(prompt)
+            yield 'idempotent-response'
+
+    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
+
+    token_response = client.post(
+        '/api/auth/token',
+        data={'username': 'idempotent-chat-user', 'password': 'safe-password-123'},
+        content_type='application/json',
+    )
+    access = token_response.json()['access']
+
+    first_response = client.post(
+        '/api/chat',
+        data={'message': 'I have fever', 'request_id': 'req-123'},
+        content_type='application/json',
+        HTTP_AUTHORIZATION=f'Bearer {access}',
+    )
+    assert first_response.status_code == 200
+    assert _streaming_body(first_response) == 'data: idempotent-response\n\n'
+    session_id = int(first_response['X-Chat-Session-Id'])
+    assert first_response['X-Request-Id'] == 'req-123'
+
+    retried_response = client.post(
+        '/api/chat',
+        data={
+            'message': 'I have fever',
+            'session_id': session_id,
+            'request_id': 'req-123',
+        },
+        content_type='application/json',
+        HTTP_AUTHORIZATION=f'Bearer {access}',
+    )
+
+    assert retried_response.status_code == 200
+    assert _streaming_body(retried_response) == f'data: {MERGED_IN_PREVIOUS_RESPONSE_TOKEN}\n\n'
+    assert retried_response['X-Request-Id'] == 'req-123'
+
+    stored_user_messages = list(
+        ChatMessage.objects.filter(
+            session_id=session_id,
+            role='user',
+            content='I have fever',
+        ).values('request_id')
+    )
+    assert stored_user_messages == [{'request_id': 'req-123'}]
+    assert FakeAgent.seen_prompts == ['I have fever']

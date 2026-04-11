@@ -1,8 +1,14 @@
-from typing import Literal
+from typing import Any
 
-from django.contrib.auth import get_user_model
 from ninja import Router, Schema
 from ninja.responses import Status
+from pydantic import ValidationInfo, field_validator
+
+from chatbot.features.core.api.validation import ValidationErrorResponseSchema, to_validation_status
+from chatbot.features.core.constants import InsuranceTier
+from chatbot.features.core.domain.validation import DomainValidationError, require_non_blank_text
+from chatbot.features.users.application.signup import DuplicateEmailError, SignUpUserCommand
+from chatbot.features.users.composition import build_signup_use_case
 
 router = Router()
 
@@ -11,7 +17,16 @@ class SignupRequestSchema(Schema):
     email: str
     password: str
     first_name: str
-    insurance_tier: Literal['Bronze', 'Silver', 'Gold']
+    insurance_tier: InsuranceTier
+
+    @field_validator('email', 'password', 'first_name')
+    @classmethod
+    def validate_required_text(
+        cls: type['SignupRequestSchema'],
+        value: str,
+        info: ValidationInfo,
+    ) -> str:
+        return require_non_blank_text(value, field=info.field_name)
 
 
 class SignupResponseSchema(Schema):
@@ -24,23 +39,34 @@ class SignupErrorSchema(Schema):
     detail: str
 
 
-@router.post('/signup', response={201: SignupResponseSchema, 409: SignupErrorSchema})
-def signup(request, payload: SignupRequestSchema):
-    user_model = get_user_model()
+@router.post(
+    '/signup',
+    response={
+        201: SignupResponseSchema,
+        409: SignupErrorSchema,
+        422: ValidationErrorResponseSchema,
+    },
+)
+def signup(request: Any, payload: SignupRequestSchema) -> Status:
+    _ = request
+    use_case = build_signup_use_case()
 
-    if user_model.objects.filter(email=payload.email).exists():
-        return Status(409, {'detail': 'A user with that email already exists.'})
-
-    user = user_model.objects.create_user(
-        username=payload.email,
-        email=payload.email,
-        password=payload.password,
-        first_name=payload.first_name,
-        insurance_tier=payload.insurance_tier,
-    )
+    try:
+        result = use_case.execute(
+            SignUpUserCommand(
+                email=payload.email,
+                password=payload.password,
+                first_name=payload.first_name,
+                insurance_tier=str(payload.insurance_tier),
+            )
+        )
+    except DuplicateEmailError as error:
+        return Status(409, {'detail': str(error)})
+    except DomainValidationError as error:
+        return to_validation_status(error)
 
     return Status(201, SignupResponseSchema(
-        email=user.email,
-        first_name=user.first_name,
-        insurance_tier=user.insurance_tier,
+        email=result.email,
+        first_name=result.first_name,
+        insurance_tier=result.insurance_tier,
     ))

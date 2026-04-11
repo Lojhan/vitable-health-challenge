@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { apiClient } from '../../lib/apiClient'
-import { useAuthStore } from '../auth'
+import { useAuthStore } from '../../features/auth/stores/auth'
 import { useChatStore } from '../chat'
 
 const FRONTEND_BURST_SEPARATOR_TOKEN = '<USER_MESSAGE_BURST_SEPARATOR>'
@@ -135,7 +135,7 @@ describe('chat store', () => {
     expect(assistantMessages[0].content).toBe('grouped')
   })
 
-  it('renders placeholder and supports multiple assistant message bubbles', async () => {
+  it('streams chunks into a single assistant message without placeholder overload', async () => {
     const authStore = useAuthStore()
     authStore.token = 'test-token'
 
@@ -155,17 +155,13 @@ describe('chat store', () => {
     const chatStore = useChatStore()
     const pending = chatStore.sendMessage('hello')
 
-    // Placeholder should be immediately visible while streaming.
-    expect(chatStore.messages.at(-1)?.content).toBe('...')
-
     await pending
 
     const assistantMessages = chatStore.messages.filter(
       (message) => message.role === 'assistant',
     )
-    expect(assistantMessages).toHaveLength(2)
-    expect(assistantMessages[0].content).toBe('First message.')
-    expect(assistantMessages[1].content).toBe('Second message.')
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0].content).toBe('First message.Second message.')
   })
 
   it('preserves multiline content within a single SSE event', async () => {
