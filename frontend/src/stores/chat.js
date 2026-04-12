@@ -11,6 +11,19 @@ const AUTH_REFRESH_FAILED_ERROR = 'AUTH_REFRESH_FAILED'
 const MERGED_IN_PREVIOUS_RESPONSE_TOKEN = '<MERGED_IN_PREVIOUS_RESPONSE>'
 let messageCounter = 0
 let conversationCounter = 0
+let streamActivityCounter = 0
+
+const TOOL_ACTIVITY_LABELS = {
+  show_providers_for_selection: 'Reviewing provider options',
+  check_availability: 'Checking appointment availability',
+  list_my_appointments: 'Loading your upcoming appointments',
+  book_appointment: 'Preparing your booking',
+  update_my_appointment: 'Updating your appointment',
+  cancel_my_appointment: 'Cancelling your appointment',
+  list_providers: 'Searching provider availability',
+  resolve_datetime_reference: 'Normalizing the requested time window',
+  calculate_visit_cost: 'Estimating visit coverage and cost',
+}
 
 function buildMessageId() {
   messageCounter += 1
@@ -20,6 +33,11 @@ function buildMessageId() {
 function buildConversationId() {
   conversationCounter += 1
   return `conv-${Date.now()}-${conversationCounter}`
+}
+
+function buildStreamActivityId() {
+	streamActivityCounter += 1
+	return `activity-${streamActivityCounter}`
 }
 
 function buildSessionConversationId(nextSessionId) {
@@ -32,6 +50,10 @@ function buildConversationTitle(prompt) {
     return 'New conversation'
   }
   return normalized.slice(0, 42)
+}
+
+function buildMockIsoTimestamp(offsetMs = 0) {
+	return new Date(Date.now() + offsetMs).toISOString()
 }
 
 function parseProtocolLine(raw) {
@@ -65,13 +87,86 @@ function stringifyStructuredContent(content) {
   }
 }
 
+function humanizeToolActivity(toolName) {
+  const normalized = String(toolName ?? '').trim()
+  if (!normalized) {
+    return 'Working on your request'
+  }
+
+  return TOOL_ACTIVITY_LABELS[normalized] ?? normalized.replaceAll('_', ' ')
+}
+
+function normalizeStreamActivityPayload(rawPayload, defaultPhase = 'running') {
+  if (typeof rawPayload === 'string') {
+    const trimmed = rawPayload.trim()
+    return {
+      toolCallId: '',
+      toolName: '',
+      label: trimmed || 'Working on your request',
+      phase: defaultPhase,
+      state: defaultPhase === 'completed' ? 'completed' : 'active',
+    }
+  }
+
+  if (!rawPayload || typeof rawPayload !== 'object') {
+    return {
+      toolCallId: '',
+      toolName: '',
+      label: 'Working on your request',
+      phase: defaultPhase,
+      state: defaultPhase === 'completed' ? 'completed' : 'active',
+    }
+  }
+
+  const toolName = String(rawPayload.tool_name ?? rawPayload.toolName ?? '').trim()
+  const label = String(
+    rawPayload.label
+    ?? rawPayload.message
+    ?? humanizeToolActivity(toolName),
+  ).trim()
+
+  return {
+    toolCallId: String(rawPayload.tool_call_id ?? rawPayload.toolCallId ?? '').trim(),
+    toolName,
+    label: label || humanizeToolActivity(toolName),
+    phase: String(rawPayload.phase ?? defaultPhase).trim() || defaultPhase,
+    state: String(rawPayload.state ?? (defaultPhase === 'completed' ? 'completed' : 'active')).trim()
+      || (defaultPhase === 'completed' ? 'completed' : 'active'),
+  }
+}
+
 /**
  * Processes a single parsed data chunk from the SSE stream.
  * Returns a signal object: { earlyReturn: true } when the caller must stop
  * processing and return immediately (emergency or burst-merged).
  */
-function processStreamChunk(chunk, { ensureAssistantMessage, updateMeta, onEarlyReturn, emergencyRef }) {
+function resolveStructuredMessageState(rawResult) {
+  if (!rawResult || typeof rawResult !== 'object') {
+    return 'final'
+  }
+
+  const normalized = String(rawResult.ui_state ?? 'final').trim().toLowerCase()
+  if (['skeleton', 'partial', 'final', 'error'].includes(normalized)) {
+    return normalized
+  }
+
+  return 'final'
+}
+
+function processStreamChunk(
+  chunk,
+  {
+    ensureAssistantMessage,
+    updateMeta,
+    onEarlyReturn,
+    emergencyRef,
+    recordStreamActivity,
+    completeStreamActivity,
+    clearStreamActivities,
+  },
+) {
   if (chunk === MERGED_IN_PREVIOUS_RESPONSE_TOKEN) {
+    clearStreamActivities()
     onEarlyReturn()
     return { earlyReturn: true }
   }
@@ -84,6 +179,7 @@ function processStreamChunk(chunk, { ensureAssistantMessage, updateMeta, onEarly
       return {}
     }
     if (chunk === '<EMERGENCY_OVERRIDE>') {
+      clearStreamActivities()
       emergencyRef.value = true
       ensureAssistantMessage('text').content = 'Emergency signal received. Please call emergency services now.'
       updateMeta()
@@ -99,6 +195,7 @@ function processStreamChunk(chunk, { ensureAssistantMessage, updateMeta, onEarly
   if (proto.prefix === '0') {
     const delta = String(proto.payload ?? '')
     if (delta === '<EMERGENCY_OVERRIDE>') {
+      clearStreamActivities()
       emergencyRef.value = true
       ensureAssistantMessage('text').content = 'Emergency signal received. Please call emergency services now.'
       updateMeta()
@@ -127,21 +224,34 @@ function processStreamChunk(chunk, { ensureAssistantMessage, updateMeta, onEarly
   // 9: tool_result (structured UI component)
   if (proto.prefix === '9') {
     const data = proto.payload
+    const resultState = resolveStructuredMessageState(data?.result)
+    if (resultState === 'final' || resultState === 'error') {
+      completeStreamActivity(data)
+    } else {
+      recordStreamActivity(data, resultState)
+    }
     const kind = normalizeAssistantMessageKind(data?.ui_kind)
-    const assistantTarget = ensureAssistantMessage(kind)
+    const assistantTarget = ensureAssistantMessage(kind, false, {
+      streamKey: String(data?.tool_call_id ?? ''),
+    })
     assistantTarget.messageKind = kind
     assistantTarget.content = stringifyStructuredContent(data?.result)
     updateMeta()
     return {}
   }
 
-  // s: status (loading indicator) — currently ignored, future: show pill
-  if (proto.prefix === 's') {
+  if (proto.prefix === '8') {
+    recordStreamActivity(proto.payload, 'started')
     return {}
   }
 
-  // 2: error
+  if (proto.prefix === 's') {
+    recordStreamActivity(proto.payload, 'running')
+    return {}
+  }
+
   if (proto.prefix === '2') {
+    clearStreamActivities()
     ensureAssistantMessage('text').content = String(proto.payload ?? 'An error occurred.')
     updateMeta()
     return {}
@@ -161,6 +271,7 @@ export const useChatStore = defineStore('chat', () => {
   const emergencyOverride = ref(false)
   const streamError = ref('')
   const sessionId = ref(null)
+  const streamActivities = ref([])
   const authStore = useAuthStore()
 
   const pendingPromptBurst = ref([])
@@ -380,6 +491,7 @@ export const useChatStore = defineStore('chat', () => {
     sessionId.value = null
     streamError.value = ''
     emergencyOverride.value = false
+	clearStreamActivities()
   }
 
   function selectConversation(conversationId) {
@@ -396,6 +508,7 @@ export const useChatStore = defineStore('chat', () => {
     sessionId.value = selectedConversation.sessionId ?? null
     streamError.value = ''
     emergencyOverride.value = false
+	clearStreamActivities()
   }
 
   function resetEmergencyState() {
@@ -419,6 +532,63 @@ export const useChatStore = defineStore('chat', () => {
     items.forEach((item) => item.resolve())
   }
 
+  function recordStreamActivity(rawPayload, defaultPhase = 'running') {
+    const normalized = normalizeStreamActivityPayload(rawPayload, defaultPhase)
+    const existingActivity = [...streamActivities.value].reverse().find((activity) => {
+      if (normalized.toolCallId) {
+        return activity.toolCallId === normalized.toolCallId
+      }
+
+      if (normalized.toolName) {
+        return activity.toolName === normalized.toolName && activity.state !== 'completed'
+      }
+
+      return activity.label === normalized.label && activity.state !== 'completed'
+    })
+
+    if (existingActivity) {
+      existingActivity.label = normalized.label
+      existingActivity.phase = normalized.phase
+      existingActivity.state = normalized.state
+      return existingActivity
+    }
+
+    const nextActivity = {
+      id: buildStreamActivityId(),
+      ...normalized,
+    }
+
+    streamActivities.value.push(nextActivity)
+    return nextActivity
+  }
+
+  function completeStreamActivity(rawPayload) {
+    const normalized = normalizeStreamActivityPayload(rawPayload, 'completed')
+    const existingActivity = [...streamActivities.value].reverse().find((activity) => {
+      if (normalized.toolCallId) {
+        return activity.toolCallId === normalized.toolCallId
+      }
+
+      if (normalized.toolName) {
+        return activity.toolName === normalized.toolName
+      }
+
+      return false
+    })
+
+    if (!existingActivity) {
+      return
+    }
+
+    existingActivity.label = normalized.label
+    existingActivity.phase = normalized.phase
+    existingActivity.state = 'completed'
+  }
+
+  function clearStreamActivities() {
+    streamActivities.value = []
+  }
+
   function clearPromptBurstState() {
     if (promptBurstTimerId !== null) {
       clearTimeout(promptBurstTimerId)
@@ -428,6 +598,7 @@ export const useChatStore = defineStore('chat', () => {
     resolveBurstItems(pendingPromptBurst.value)
     pendingPromptBurst.value = []
     isSendingPromptBurst = false
+    clearStreamActivities()
   }
 
   function schedulePromptBurstSend() {
@@ -458,8 +629,24 @@ export const useChatStore = defineStore('chat', () => {
     const prompt = burstItems.map((item) => item.prompt).join(FRONTEND_BURST_SEPARATOR_TOKEN)
     let activeAssistantMessage = null
 
-    function ensureAssistantMessage(kind, forceNew = false) {
-      if (!forceNew && activeAssistantMessage?.messageKind === kind) {
+    function ensureAssistantMessage(kind, forceNew = false, options = {}) {
+      const streamKey = String(options.streamKey ?? '').trim()
+
+      if (streamKey) {
+        const matchedMessage = messages.value.find((message) => (
+          message.role === 'assistant' && message.streamKey === streamKey
+        ))
+        if (matchedMessage) {
+          activeAssistantMessage = matchedMessage
+          return activeAssistantMessage
+        }
+      }
+
+      if (
+        !forceNew
+        && activeAssistantMessage?.messageKind === kind
+        && (!streamKey || activeAssistantMessage?.streamKey === streamKey)
+      ) {
         return activeAssistantMessage
       }
 
@@ -467,6 +654,7 @@ export const useChatStore = defineStore('chat', () => {
         id: buildMessageId(),
         role: 'assistant',
         messageKind: kind,
+        streamKey: streamKey || null,
         content: '',
       }
       messages.value.push(nextAssistantMessage)
@@ -503,10 +691,14 @@ export const useChatStore = defineStore('chat', () => {
           resolveBurstItems(burstItems)
         },
         emergencyRef: emergencyOverride,
+        recordStreamActivity,
+        completeStreamActivity,
+        clearStreamActivities,
       }
 
       let receivedAtLeastOneChunk = false
       let authRefreshFailed = false
+      clearStreamActivities()
 
       await fetchEventSource(`${getApiBaseUrl()}/api/chat`, {
         ...buildRequestOptions(),
@@ -555,6 +747,7 @@ export const useChatStore = defineStore('chat', () => {
       })
 
       if (authRefreshFailed) {
+        clearStreamActivities()
         resolveBurstItems(burstItems)
         return
       }
@@ -569,6 +762,7 @@ export const useChatStore = defineStore('chat', () => {
       resolveBurstItems(burstItems)
     } catch (error) {
       if (authRefreshFailed || (error instanceof Error && error.message === AUTH_REFRESH_FAILED_ERROR)) {
+        clearStreamActivities()
         resolveBurstItems(burstItems)
         return
       }
@@ -583,6 +777,7 @@ export const useChatStore = defineStore('chat', () => {
     } finally {
       activeStreamCount.value = Math.max(0, activeStreamCount.value - 1)
       isSendingPromptBurst = false
+      clearStreamActivities()
       updateActiveConversationMeta()
 
       if (pendingPromptBurst.value.length > 0) {
@@ -602,6 +797,7 @@ export const useChatStore = defineStore('chat', () => {
         streamError.value = ''
         emergencyOverride.value = false
         clearPromptBurstState()
+        clearStreamActivities()
       }
     },
   )
@@ -643,6 +839,7 @@ export const useChatStore = defineStore('chat', () => {
     sessionId.value = null
     emergencyOverride.value = false
     clearPromptBurstState()
+    clearStreamActivities()
 
     setLatestConversationAsActive()
 
@@ -655,12 +852,78 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function loadMockActivityPreview() {
+    const now = buildMockIsoTimestamp()
+    const previewConversation = {
+      id: buildConversationId(),
+      title: 'Agent activity preview',
+      createdAt: now,
+      updatedAt: now,
+      sessionId: null,
+      messages: [
+        {
+          id: buildMessageId(),
+          role: 'user',
+          messageKind: 'text',
+          content: 'Find me an appointment with Dr. Sarah Chen next week.',
+        },
+        {
+          id: buildMessageId(),
+          role: 'assistant',
+          messageKind: 'availability',
+          streamKey: 'mock-availability-preview',
+          content: JSON.stringify({
+            type: 'availability',
+            interaction_id: 'mock-availability-preview',
+            ui_state: 'partial',
+            progress_message: 'Checking appointment availability',
+            available_slots_utc: [],
+          }),
+        },
+      ],
+    }
+
+    conversations.value.unshift(previewConversation)
+    activeConversationId.value = previewConversation.id
+    messages.value = previewConversation.messages
+    sessionId.value = null
+    streamError.value = ''
+    emergencyOverride.value = false
+    streamActivities.value = [
+      {
+        id: buildStreamActivityId(),
+        toolCallId: 'mock-provider-search',
+        toolName: 'show_providers_for_selection',
+        label: 'Reviewing provider options',
+        phase: 'completed',
+        state: 'completed',
+      },
+      {
+        id: buildStreamActivityId(),
+        toolCallId: 'mock-date-window',
+        toolName: 'resolve_datetime_reference',
+        label: 'Normalizing the requested time window',
+        phase: 'completed',
+        state: 'completed',
+      },
+      {
+        id: buildStreamActivityId(),
+        toolCallId: 'mock-availability-preview',
+        toolName: 'check_availability',
+        label: 'Checking appointment availability',
+        phase: 'running',
+        state: 'active',
+      },
+    ]
+  }
+
   return {
     messages,
     conversations,
     activeConversationId,
     conversationSummaries,
     isStreaming,
+    streamActivities,
     isSyncingHistory,
     emergencyOverride,
     streamError,
@@ -668,6 +931,7 @@ export const useChatStore = defineStore('chat', () => {
     sendMessage,
     synchronizeHistoryOnStartup,
     startNewConversation,
+    loadMockActivityPreview,
     selectConversation,
     clearChat,
     resetEmergencyState,

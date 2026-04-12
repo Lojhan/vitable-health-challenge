@@ -79,7 +79,13 @@ function sortIsoDateTimes(values) {
 }
 
 export function getAvailabilitySlots(payloadData = {}) {
-	if (Array.isArray(payloadData.available_slots_utc)) {
+	if (
+		Array.isArray(payloadData.available_slots_utc)
+		&& (
+			payloadData.available_slots_utc.length > 0
+			|| payloadData.availability_source === 'open_slots'
+		)
+	) {
 		return sortIsoDateTimes(payloadData.available_slots_utc)
 	}
 

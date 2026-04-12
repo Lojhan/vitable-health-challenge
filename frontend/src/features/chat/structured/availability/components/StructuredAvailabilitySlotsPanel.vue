@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, toRef } from 'vue'
 
 import { safeText } from '../../../lib/structuredPayload'
 import { useStructuredAvailabilityState } from '../composables/useStructuredAvailabilityState'
@@ -30,7 +30,7 @@ const {
 	selectSlot,
 	saveSlotSelection,
 	resolveDefaultDayTitle,
-} = useStructuredAvailabilityState(props.payload, { filterToFocusPeriod: true })
+} = useStructuredAvailabilityState(toRef(props, 'payload'), { filterToFocusPeriod: true })
 
 const selectedSlot = computed(() => daySlots.value.find((slot) => slot.id === selectedSlotId.value) ?? null)
 const sectionTitle = computed(() => {

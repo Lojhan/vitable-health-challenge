@@ -1,5 +1,13 @@
 import { buildAvailabilityQuickActions } from '../structured/availability/lib/availabilityModel'
 
+function normalizeStructuredState(candidate) {
+	const normalized = String(candidate ?? 'final').trim().toLowerCase()
+	if (['skeleton', 'partial', 'final', 'error'].includes(normalized)) {
+		return normalized
+	}
+	return 'final'
+}
+
 function isProvider(candidate) {
 	return candidate
 		&& typeof candidate === 'object'
@@ -38,12 +46,15 @@ function coerceInteractionId(candidate, fallback) {
 
 function resolvePayloadKind(parsed, fallbackInteractionId) {
 	const interactionId = coerceInteractionId(parsed?.interaction_id, fallbackInteractionId)
+	const state = normalizeStructuredState(parsed?.ui_state)
+	const progressLabel = String(parsed?.progress_message ?? '').trim()
+	const errorMessage = String(parsed?.error_message ?? '').trim()
 
 	if (Array.isArray(parsed)) {
 		if (parsed.every((item) => isProvider(item))) {
-			return { kind: 'providers', data: parsed, interactionId }
+			return { kind: 'providers', data: parsed, interactionId, state: 'final', progressLabel: '', errorMessage: '' }
 		}
-		return { kind: 'json', data: parsed, interactionId }
+		return { kind: 'json', data: parsed, interactionId, state: 'final', progressLabel: '', errorMessage: '' }
 	}
 
 	if (!parsed || typeof parsed !== 'object') {
@@ -53,50 +64,50 @@ function resolvePayloadKind(parsed, fallbackInteractionId) {
 	const normalizedType = String(parsed.type ?? parsed.kind ?? '').toLowerCase()
 
 	if (normalizedType === 'providers' && Array.isArray(parsed.providers)) {
-		return { kind: 'providers', data: parsed.providers, interactionId }
+		return { kind: 'providers', data: parsed.providers, interactionId, state, progressLabel, errorMessage }
 	}
 
 	if (
 		normalizedType === 'availability'
 		&& isAvailabilityPayload(parsed)
 	) {
-		return { kind: 'availability', data: parsed, interactionId }
+		return { kind: 'availability', data: parsed, interactionId, state, progressLabel, errorMessage }
 	}
 
 	if (
 		normalizedType === 'availability_day'
 		&& isAvailabilityPayload(parsed)
 	) {
-		return { kind: 'availability_day', data: parsed, interactionId }
+		return { kind: 'availability_day', data: parsed, interactionId, state, progressLabel, errorMessage }
 	}
 
 	if (
 		normalizedType === 'availability_slots'
 		&& isAvailabilityPayload(parsed)
 	) {
-		return { kind: 'availability_slots', data: parsed, interactionId }
+		return { kind: 'availability_slots', data: parsed, interactionId, state, progressLabel, errorMessage }
 	}
 
 	if (
 		normalizedType === 'appointments'
 		&& Array.isArray(parsed.appointments)
 	) {
-		return { kind: 'appointments', data: parsed, interactionId }
+		return { kind: 'appointments', data: parsed, interactionId, state, progressLabel, errorMessage }
 	}
 
 	if (Array.isArray(parsed.providers) && parsed.providers.every((item) => isProvider(item))) {
-		return { kind: 'providers', data: parsed.providers, interactionId }
+		return { kind: 'providers', data: parsed.providers, interactionId, state, progressLabel, errorMessage }
 	}
 
 	if (isAvailabilityPayload(parsed)) {
-		return { kind: 'availability', data: parsed, interactionId }
+		return { kind: 'availability', data: parsed, interactionId, state, progressLabel, errorMessage }
 	}
 
 	if (Array.isArray(parsed.appointments) && typeof parsed.count === 'number') {
-		return { kind: 'appointments', data: parsed, interactionId }
+		return { kind: 'appointments', data: parsed, interactionId, state, progressLabel, errorMessage }
 	}
 
-	return { kind: 'json', data: parsed, interactionId }
+	return { kind: 'json', data: parsed, interactionId, state, progressLabel, errorMessage }
 }
 
 export function normalizeStructuredPayload(rawContent) {
@@ -139,7 +150,16 @@ export function normalizeStructuredPayload(rawContent) {
 	return { kind: 'text', data: rawContent }
 }
 
-export function buildStructuredLeadMessage(payloadKind) {
+
+export function buildStructuredLeadMessage(payloadKind, payloadState = 'final', progressLabel = '') {
+	if (payloadState === 'skeleton' || payloadState === 'partial') {
+		return progressLabel || 'Working on a structured response for you.'
+	}
+
+	if (payloadState === 'error') {
+		return 'I ran into a problem while preparing the structured result.'
+	}
+
 	if (payloadKind === 'providers') {
 		return 'I found a few providers you can choose from.'
 	}
@@ -168,7 +188,7 @@ export function buildStructuredLeadMessage(payloadKind) {
 }
 
 export function buildStructuredQuickActions(payload) {
-	if (!payload || payload.kind === 'text') {
+	if (!payload || payload.kind === 'text' || payload.state === 'skeleton' || payload.state === 'partial' || payload.state === 'error') {
 		return []
 	}
 

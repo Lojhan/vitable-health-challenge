@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, unref, watch } from 'vue'
 
 import { useChatStore } from '../../../../../stores/chat'
 import {
@@ -61,10 +61,11 @@ function isAvailabilitySelectionKind(candidate) {
 }
 
 export function useStructuredAvailabilityState(payload, options = {}) {
-	const interactionId = computed(() => String(payload?.interactionId ?? '').trim())
-	const payloadKind = computed(() => String(payload?.kind ?? 'availability'))
-	const timezone = computed(() => payload?.data?.timezone ?? 'UTC')
-	const availabilityData = computed(() => payload?.data ?? {})
+	const resolvedPayload = computed(() => unref(payload) ?? null)
+	const interactionId = computed(() => String(resolvedPayload.value?.interactionId ?? '').trim())
+	const payloadKind = computed(() => String(resolvedPayload.value?.kind ?? 'availability'))
+	const timezone = computed(() => resolvedPayload.value?.data?.timezone ?? 'UTC')
+	const availabilityData = computed(() => resolvedPayload.value?.data ?? {})
 	const availabilitySignature = computed(() => JSON.stringify(availabilityData.value ?? {}))
 	const focusDateIso = computed(() => normalizeFocusDate(
 		options.focusDateIso ?? availabilityData.value.focus_date_utc ?? availabilityData.value.focus_datetime_utc,

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -202,3 +203,31 @@ def test_check_availability_without_provider_id_preserves_open_agenda_behavior()
     assert '2026-04-10T09:00:00' in slots
     assert '2026-04-10T10:00:00' not in slots
     assert '2026-04-10T11:00:00' in slots
+
+
+@pytest.mark.django_db
+def test_check_availability_accepts_to_separator_date_ranges():
+    provider = make_provider()
+
+    slots = check_availability(
+        '2026-04-10T09:00:00 to 2026-04-10T12:00:00',
+        provider_id=provider.pk,
+    )
+
+    assert '2026-04-10T09:00:00' in slots
+    assert '2026-04-10T10:00:00' in slots
+
+
+@pytest.mark.django_db
+def test_check_availability_accepts_this_month_window():
+    provider = make_provider()
+    frozen_now = datetime(2026, 4, 12, 8, 0, 0, tzinfo=UTC)
+
+    with patch(
+        'chatbot.features.scheduling.application.common.timezone.now',
+        return_value=frozen_now,
+    ):
+        slots = check_availability('this month', provider_id=provider.pk)
+
+    assert '2026-04-14T09:00:00' in slots
+    assert '2026-04-15T10:00:00' in slots

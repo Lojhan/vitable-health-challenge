@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, unref, watch } from 'vue'
 
 import { useChatStore } from '../../../../stores/chat'
 import {
@@ -11,8 +11,9 @@ import {
 } from '../services/structuredInteractionApi'
 
 export function useStructuredProviders(payload) {
-	const interactionId = computed(() => String(payload?.interactionId ?? '').trim())
-	const initialProviders = computed(() => payload?.data ?? [])
+	const resolvedPayload = computed(() => unref(payload) ?? null)
+	const interactionId = computed(() => String(resolvedPayload.value?.interactionId ?? '').trim())
+	const initialProviders = computed(() => resolvedPayload.value?.data ?? [])
 	const selectedSpecialty = ref('All')
 	const specialties = ref(['All'])
 	const providers = ref(initialProviders.value)
@@ -140,6 +141,12 @@ export function useStructuredProviders(payload) {
 
 		selectedProviderSelection.value = response.selection
 	}
+
+	watch(initialProviders, (nextProviders) => {
+		if (!isLoadingProviders.value && Array.isArray(nextProviders)) {
+			providers.value = nextProviders
+		}
+	}, { immediate: true })
 
 	onMounted(async () => {
 		setupViewportWatcher()

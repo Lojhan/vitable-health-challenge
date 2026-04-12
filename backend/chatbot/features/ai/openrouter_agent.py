@@ -30,12 +30,17 @@ from chatbot.features.ai.infrastructure.gateway import (
 )
 from chatbot.features.ai.infrastructure.temporal_context import build_temporal_context_lines
 from chatbot.features.ai.tool_registry import TOOL_EXECUTOR_BY_NAME
-from chatbot.features.ai.ui_tool_registry import get_ui_kind
+from chatbot.features.ai.ui_tool_registry import (
+    build_visible_tool_payload,
+    get_tool_activity_label,
+    get_ui_kind,
+)
 from chatbot.features.chat.stream_protocol import (
     encode_error,
     encode_finish,
     encode_status,
     encode_text_delta,
+    encode_tool_call,
     encode_tool_result,
 )
 from chatbot.features.core.observability import (
@@ -286,7 +291,7 @@ class OpenRouterAgent(BaseAgentInterface):
 
         for parsed_call in parsed_tool_calls:
             if emit_status:
-                yield ('status', parsed_call.tool_name)
+                yield ('status', parsed_call)
 
             execution_result = await tool_executor.execute(
                 parsed_call,
@@ -413,19 +418,74 @@ class OpenRouterAgent(BaseAgentInterface):
                     emit_status=True,
                 ):
                     if event_type == 'status':
-                        yield encode_status(f'Executing {event_payload}...')
+                        parsed_call = cast(ParsedToolCall, event_payload)
+                        activity_label = get_tool_activity_label(parsed_call.tool_name)
+                        ui_kind = get_ui_kind(parsed_call.tool_name)
+                        yield encode_tool_call(
+                            tool_call_id=parsed_call.tool_call_id,
+                            tool_name=parsed_call.tool_name,
+                            label=activity_label,
+                            phase='started',
+                        )
+                        if ui_kind:
+                            skeleton_payload = build_visible_tool_payload(
+                                tool_name=parsed_call.tool_name,
+                                tool_call_id=parsed_call.tool_call_id,
+                                state='skeleton',
+                            )
+                            if skeleton_payload is not None:
+                                yield encode_tool_result(
+                                    tool_name=parsed_call.tool_name,
+                                    tool_call_id=parsed_call.tool_call_id,
+                                    ui_kind=ui_kind,
+                                    result=skeleton_payload,
+                                )
+                        yield encode_status({
+                            'tool_call_id': parsed_call.tool_call_id,
+                            'tool_name': parsed_call.tool_name,
+                            'label': activity_label,
+                            'phase': 'running',
+                            'state': 'active',
+                        })
+                        if ui_kind:
+                            partial_payload = build_visible_tool_payload(
+                                tool_name=parsed_call.tool_name,
+                                tool_call_id=parsed_call.tool_call_id,
+                                state='partial',
+                            )
+                            if partial_payload is not None:
+                                yield encode_tool_result(
+                                    tool_name=parsed_call.tool_name,
+                                    tool_call_id=parsed_call.tool_call_id,
+                                    ui_kind=ui_kind,
+                                    result=partial_payload,
+                                )
                         continue
 
                     execution_result = cast(Any, event_payload)
                     ui_kind = get_ui_kind(execution_result.parsed_call.tool_name)
-                    if ui_kind and not (
-                        isinstance(execution_result.payload, dict)
-                        and 'error' in execution_result.payload
-                    ):
+                    if ui_kind:
+                        has_error = (
+                            isinstance(execution_result.payload, dict)
+                            and 'error' in execution_result.payload
+                        )
+                        visible_payload = build_visible_tool_payload(
+                            tool_name=execution_result.parsed_call.tool_name,
+                            tool_call_id=execution_result.parsed_call.tool_call_id,
+                            state='error' if has_error else 'final',
+                            result=None if has_error else execution_result.payload,
+                            error_message=(
+                                str(execution_result.payload.get('error'))
+                                if has_error else None
+                            ),
+                        )
+                        if visible_payload is None:
+                            continue
                         yield encode_tool_result(
                             tool_name=execution_result.parsed_call.tool_name,
+                            tool_call_id=execution_result.parsed_call.tool_call_id,
                             ui_kind=ui_kind,
-                            result=execution_result.payload,
+                            result=visible_payload,
                         )
 
                 self._log_tool_round_completion(

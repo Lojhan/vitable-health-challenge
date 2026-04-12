@@ -38,23 +38,32 @@ def encode_error(message: str) -> str:
     return encode_stream_line(PREFIX_ERROR, message)
 
 
-def encode_tool_call(*, tool_call_id: str, tool_name: str) -> str:
+def encode_tool_call(
+	*,
+	tool_call_id: str,
+	tool_name: str,
+	label: str | None = None,
+	phase: str = 'started',
+) -> str:
     return encode_stream_line(PREFIX_TOOL_CALL, {
         'tool_call_id': tool_call_id,
         'tool_name': tool_name,
+        'label': label,
+        'phase': phase,
     })
 
 
-def encode_tool_result(*, tool_name: str, ui_kind: str, result: Any) -> str:
+def encode_tool_result(*, tool_name: str, tool_call_id: str, ui_kind: str, result: Any) -> str:
     return encode_stream_line(PREFIX_TOOL_RESULT, {
         'tool_name': tool_name,
+        'tool_call_id': tool_call_id,
         'ui_kind': ui_kind,
         'result': result,
     })
 
 
-def encode_status(message: str) -> str:
-    return encode_stream_line(PREFIX_STATUS, message)
+def encode_status(payload: Any) -> str:
+    return encode_stream_line(PREFIX_STATUS, payload)
 
 
 def encode_finish(finish_reason: str = 'stop') -> str:

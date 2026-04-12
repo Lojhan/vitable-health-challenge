@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, toRef, watch } from 'vue'
 
 import { safeText } from '../../../lib/structuredPayload'
 import { useStructuredAvailabilityState } from '../composables/useStructuredAvailabilityState'
@@ -15,6 +15,13 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['quick-reply'])
+const uiState = computed(() => String(props.payload?.state ?? 'final').trim().toLowerCase())
+const isSkeletonState = computed(() => uiState.value === 'skeleton')
+const isPartialState = computed(() => uiState.value === 'partial')
+const isErrorState = computed(() => uiState.value === 'error')
+const isProgressState = computed(() => isSkeletonState.value || isPartialState.value)
+const progressLabel = computed(() => props.payload?.progressLabel || 'Preparing the availability calendar...')
+const errorMessage = computed(() => props.payload?.errorMessage || 'Unable to load availability right now.')
 
 const {
 	totalSlots,
@@ -37,7 +44,7 @@ const {
 	selectDay,
 	selectSlot,
 	saveSlotSelection,
-} = useStructuredAvailabilityState(props.payload)
+} = useStructuredAvailabilityState(toRef(props, 'payload'))
 
 const mobileStep = ref('date')
 const selectedSlot = computed(() => daySlots.value.find((slot) => slot.id === selectedSlotId.value) ?? null)
@@ -106,6 +113,27 @@ watch(isMobile, (mobile) => {
 
 <template>
 	<div class="grid gap-3">
+		<div v-if="isProgressState" class="grid gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 shadow-sm">
+			<div class="flex items-center justify-between gap-2">
+				<p class="m-0 text-xs font-semibold uppercase tracking-[0.14em] text-indigo-600">Availability calendar</p>
+				<p class="m-0 text-xs text-slate-500">{{ progressLabel }}</p>
+			</div>
+			<div class="grid gap-2">
+				<div class="grid grid-cols-7 gap-1.5">
+					<span v-for="day in 7" :key="`header-${day}`" class="h-2 rounded-full bg-slate-200 state-skeleton-line" />
+				</div>
+				<div class="grid grid-cols-7 gap-1.5">
+					<span v-for="cell in 35" :key="cell" class="aspect-square rounded-lg bg-slate-100 state-skeleton-cell" />
+				</div>
+			</div>
+		</div>
+
+		<div v-else-if="isErrorState" class="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-800">
+			<p class="m-0 text-xs font-semibold uppercase tracking-[0.14em] text-rose-700">Availability unavailable</p>
+			<p class="m-0 mt-1.5">{{ errorMessage }}</p>
+		</div>
+
+		<template v-else>
 		<div v-if="isLoadingSavedSelection" class="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
 			Loading your previous slot selection...
 		</div>
@@ -192,5 +220,27 @@ watch(isMobile, (mobile) => {
 		<p v-if="payload.data.appointment_duration_note" class="m-0 text-xs text-slate-500">
 			{{ payload.data.appointment_duration_note }}
 		</p>
+		</template>
 	</div>
 </template>
+
+<style scoped>
+.state-skeleton-line,
+.state-skeleton-cell {
+	animation: structured-state-pulse 1s ease-in-out infinite;
+}
+
+.state-skeleton-cell:nth-child(odd) {
+	animation-delay: 0.1s;
+}
+
+@keyframes structured-state-pulse {
+	0%,
+	100% {
+		opacity: 0.52;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+</style>

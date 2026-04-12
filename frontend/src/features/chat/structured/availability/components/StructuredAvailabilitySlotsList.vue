@@ -30,7 +30,7 @@ const emit = defineEmits(['pick-slot', 'continue'])
 		Loading slots...
 	</div>
 
-	<div v-else-if="props.daySlots.length" class="grid gap-2">
+	<div v-else-if="props.daySlots.length" class="grid gap-2 max-h-60 overflow-scroll">
 		<button
 			v-for="slot in props.daySlots"
 			:key="slot.id"

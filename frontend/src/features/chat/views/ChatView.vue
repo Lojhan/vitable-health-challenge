@@ -26,7 +26,7 @@ const {
   toggleHeaderMenu,
   handleNewConversation,
   handleClearChat,
-  loadStructuredDemoConversation,
+  handleLoadActivityPreview,
   handleStructuredQuickReply,
   handleSelectConversation,
   formatConversationDate,
@@ -117,9 +117,9 @@ const {
                   type="button"
                   role="menuitem"
                   class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
-                  @click="loadStructuredDemoConversation"
+                  @click="handleLoadActivityPreview"
                 >
-                  Load structured demo conversation
+                  Load agent activity preview
                 </button>
                 <button
                   type="button"
@@ -165,7 +165,9 @@ const {
 
         <ChatMessageFeed
           :messages="chatStore.messages"
+          :is-streaming="chatStore.isStreaming"
           :stream-error="chatStore.streamError"
+          :stream-activities="chatStore.streamActivities"
           @quick-reply="handleStructuredQuickReply"
         />
         <ChatComposer

@@ -26,3 +26,9 @@ def test_resolve_datetime_reference_next_monday_uses_next_week_anchor():
 
     assert resolved.get('resolved') is True
     assert resolved.get('iso_datetime_utc') == '2026-04-13T09:00:00'
+
+
+def test_resolve_datetime_reference_this_month_is_not_a_single_datetime_anchor():
+	resolved = resolve_datetime_reference('this month')
+
+	assert resolved.get('resolved') is False

@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, toRef } from 'vue'
 
 import { useStructuredProviders } from '../composables/useStructuredProviders'
 
@@ -11,6 +11,13 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['quick-reply'])
+const uiState = computed(() => String(props.payload?.state ?? 'final').trim().toLowerCase())
+const isSkeletonState = computed(() => uiState.value === 'skeleton')
+const isPartialState = computed(() => uiState.value === 'partial')
+const isErrorState = computed(() => uiState.value === 'error')
+const isProgressState = computed(() => isSkeletonState.value || isPartialState.value)
+const progressLabel = computed(() => props.payload?.progressLabel || 'Preparing provider options...')
+const errorMessage = computed(() => props.payload?.errorMessage || 'Unable to load provider options right now.')
 
 const {
 	selectedSpecialty,
@@ -29,7 +36,7 @@ const {
 	openProviderDetails,
 	closeProviderDetails,
 	saveProviderSelection,
-	} = useStructuredProviders(props.payload)
+	} = useStructuredProviders(toRef(props, 'payload'))
 
 const providerCountLabel = computed(() => {
 	if (isLoadingProviders.value) {
@@ -63,6 +70,27 @@ function averageRating(reviews) {
 
 <template>
 	<div class="grid gap-3">
+		<div v-if="isProgressState" class="grid gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 shadow-sm">
+			<div class="flex items-center justify-between gap-3">
+				<p class="m-0 text-xs font-semibold uppercase tracking-[0.14em] text-indigo-600">Available providers</p>
+				<p class="m-0 text-xs text-slate-500">{{ progressLabel }}</p>
+			</div>
+			<div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+				<div v-for="index in 3" :key="index" class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+					<div class="h-3 w-24 rounded-full bg-slate-200 state-skeleton-line" />
+					<div class="mt-2 h-2.5 w-18 rounded-full bg-slate-200 state-skeleton-line state-skeleton-line-delay" />
+					<div class="mt-3 h-2.5 w-full rounded-full bg-slate-200 state-skeleton-line" />
+					<div class="mt-1.5 h-2.5 w-4/5 rounded-full bg-slate-200 state-skeleton-line state-skeleton-line-delay" />
+				</div>
+			</div>
+		</div>
+
+		<div v-else-if="isErrorState" class="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-800">
+			<p class="m-0 text-xs font-semibold uppercase tracking-[0.14em] text-rose-700">Provider options unavailable</p>
+			<p class="m-0 mt-1.5">{{ errorMessage }}</p>
+		</div>
+
+		<template v-else>
 		<div v-if="isLoadingSavedSelection" class="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
 			Loading your previous provider selection...
 		</div>
@@ -129,9 +157,9 @@ function averageRating(reviews) {
 		<section
 			v-if="detailsOpen"
 			:class="[
-				'fixed z-50 border border-slate-200 bg-white shadow-2xl',
+				'fixed z-60 border border-slate-200 bg-white shadow-2xl',
 				isMobile
-					? 'inset-x-0 bottom-0 max-h-[78vh] rounded-t-xl px-4 py-6'
+					? 'inset-x-2 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] max-h-[calc(100vh-8rem-env(safe-area-inset-bottom))] rounded-2xl px-4 py-6'
 					: 'left-1/2 top-1/2 w-[min(44rem,92vw)] max-h-[86vh] -translate-x-1/2 -translate-y-1/2 rounded-lg p-5',
 			]"
 			aria-label="Provider profile details"
@@ -195,6 +223,7 @@ function averageRating(reviews) {
 				{{ hasPastSelection ? 'Provider already selected' : `Select ${selectedProvider.name}` }}
 			</button>
 		</section>
+		</template>
 	</div>
 </template>
 
@@ -207,5 +236,23 @@ function averageRating(reviews) {
 
 .horizontal-scroll-strip::-webkit-scrollbar {
 	display: none;
+}
+
+.state-skeleton-line {
+	animation: structured-state-pulse 1s ease-in-out infinite;
+}
+
+.state-skeleton-line-delay {
+	animation-delay: 0.14s;
+}
+
+@keyframes structured-state-pulse {
+	0%,
+	100% {
+		opacity: 0.52;
+	}
+	50% {
+		opacity: 1;
+	}
 }
 </style>

@@ -19,6 +19,7 @@ const chatStore = reactive({
 	sendMessage: vi.fn(async () => {}),
 	startNewConversation: vi.fn(),
 	clearChat: vi.fn(),
+	loadMockActivityPreview: vi.fn(),
 	selectConversation: vi.fn(),
 	resetEmergencyState: vi.fn(),
 })
@@ -45,8 +46,9 @@ vi.mock('primevue/button', async () => {
 	return {
 		default: defineComponent({
 			name: 'Button',
+			inheritAttrs: false,
 			props: ['label', 'icon', 'ariaLabel', 'type'],
-			template: `<button :type="type || 'button'" @click="$emit('click')">{{ label || icon }}</button>`,
+			template: `<button v-bind="$attrs" :type="type || 'button'" @click="$emit('click')">{{ label || icon }}</button>`,
 		}),
 	}
 })
@@ -87,6 +89,7 @@ describe('ChatView', () => {
 		chatStore.sendMessage.mockClear()
 		chatStore.startNewConversation.mockClear()
 		chatStore.clearChat.mockClear()
+		chatStore.loadMockActivityPreview.mockClear()
 		chatStore.selectConversation.mockClear()
 		chatStore.resetEmergencyState.mockClear()
 	})
@@ -146,4 +149,5 @@ describe('ChatView', () => {
 
 		vi.useRealTimers()
 	})
+
 })

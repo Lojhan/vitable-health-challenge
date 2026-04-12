@@ -207,7 +207,11 @@ describe('chat store', () => {
       },
       body: buildStreamingBody([
         'data: 0:"Here are your options:"\n\n',
-        'data: 9:{"tool_name":"show_providers_for_selection","ui_kind":"providers","result":[{"provider_id":1,"name":"Dr. Lee","specialty":"General Practice"}]}\n\n',
+        'data: 8:{"tool_call_id":"tool-1","tool_name":"show_providers_for_selection","label":"Reviewing provider options","phase":"started"}\n\n',
+        'data: s:{"tool_call_id":"tool-1","tool_name":"show_providers_for_selection","label":"Reviewing provider options","phase":"running","state":"active"}\n\n',
+        'data: 9:{"tool_call_id":"tool-1","tool_name":"show_providers_for_selection","ui_kind":"providers","result":{"type":"providers","interaction_id":"tool-1","ui_state":"skeleton","progress_message":"Reviewing provider options","providers":[]}}\n\n',
+        'data: 9:{"tool_call_id":"tool-1","tool_name":"show_providers_for_selection","ui_kind":"providers","result":{"type":"providers","interaction_id":"tool-1","ui_state":"partial","progress_message":"Reviewing provider options","providers":[]}}\n\n',
+        'data: 9:{"tool_call_id":"tool-1","tool_name":"show_providers_for_selection","ui_kind":"providers","result":{"type":"providers","interaction_id":"tool-1","ui_state":"final","progress_message":"Reviewing provider options","providers":[{"provider_id":1,"name":"Dr. Lee","specialty":"General Practice"}]}}\n\n',
         'data: d:{"finish_reason":"stop"}\n\n',
       ]),
     })
@@ -222,13 +226,20 @@ describe('chat store', () => {
     expect(assistantMessages[0].messageKind).toBe('text')
     expect(assistantMessages[0].content).toBe('Here are your options:')
     expect(assistantMessages[1].messageKind).toBe('providers')
-    expect(JSON.parse(assistantMessages[1].content)).toEqual([
-      {
-        provider_id: 1,
-        name: 'Dr. Lee',
-        specialty: 'General Practice',
-      },
-    ])
+    expect(JSON.parse(assistantMessages[1].content)).toEqual({
+      type: 'providers',
+      interaction_id: 'tool-1',
+      ui_state: 'final',
+      progress_message: 'Reviewing provider options',
+      providers: [
+        {
+          provider_id: 1,
+          name: 'Dr. Lee',
+          specialty: 'General Practice',
+        },
+      ],
+    })
+    expect(chatStore.streamActivities).toEqual([])
   })
 
   it('retries chat request after access token refresh on 401', async () => {
@@ -336,6 +347,26 @@ describe('chat store', () => {
     expect(chatStore.activeConversationId).toBe('session-55')
     expect(chatStore.sessionId).toBe(55)
     expect(chatStore.messages.some((message) => message.content.includes('knee'))).toBe(true)
+  })
+
+  it('loads mocked agent activity preview data', () => {
+    const chatStore = useChatStore()
+
+    chatStore.loadMockActivityPreview()
+
+    expect(chatStore.conversationSummaries[0]?.title).toBe('Agent activity preview')
+    expect(chatStore.messages[0]?.content).toContain('Dr. Sarah Chen next week')
+    expect(chatStore.messages[1]?.messageKind).toBe('availability')
+    expect(JSON.parse(chatStore.messages[1]?.content)).toMatchObject({
+      type: 'availability',
+      ui_state: 'partial',
+      progress_message: 'Checking appointment availability',
+    })
+    expect(chatStore.streamActivities).toHaveLength(3)
+    expect(chatStore.streamActivities.at(-1)).toMatchObject({
+      toolName: 'check_availability',
+      state: 'active',
+    })
   })
 
   it('switches to a selected past conversation and restores its session id', async () => {

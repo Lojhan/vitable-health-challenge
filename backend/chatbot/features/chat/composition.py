@@ -120,10 +120,14 @@ def build_save_assistant_response_fn(
                 _flush_text()
                 if isinstance(payload, dict):
                     ui_kind = str(payload.get('ui_kind', '')).strip().lower()
+                    result = payload.get('result', payload)
+                    if isinstance(result, dict):
+                        result_state = str(result.get('ui_state', 'final')).strip().lower()
+                        if result_state and result_state != 'final':
+                            continue
                     message_kind = _UI_KIND_TO_MESSAGE_KIND.get(
                         ui_kind, ChatMessage.MessageKind.JSON,
                     )
-                    result = payload.get('result', payload)
                     content = json.dumps(result, default=str) if not isinstance(result, str) else result
                     normalized = content.strip()
                     if normalized:

@@ -17,6 +17,7 @@ from chatbot.features.chat.stream_protocol import (
     PREFIX_FINISH,
     PREFIX_STATUS,
     PREFIX_TEXT_DELTA,
+    PREFIX_TOOL_CALL,
     PREFIX_TOOL_RESULT,
 )
 from chatbot.features.scheduling.models import Appointment
@@ -333,20 +334,34 @@ def test_stream_response_resolves_tools_before_yielding(monkeypatch):
     streamed = asyncio.run(collect_chunks())
     parsed = _parse_protocol_lines(streamed)
 
-    # Should have: status, tool_result (availability), text_delta, finish
+    # Should have: tool_call, status, progressive tool_result states, text_delta, finish
     prefixes = [p for p, _ in parsed]
+    assert PREFIX_TOOL_CALL in prefixes
     assert PREFIX_STATUS in prefixes
     assert PREFIX_TOOL_RESULT in prefixes
     assert PREFIX_TEXT_DELTA in prefixes
     assert PREFIX_FINISH in prefixes
 
+    tool_call_payloads = [v for p, v in parsed if p == PREFIX_TOOL_CALL]
+    assert tool_call_payloads[0]['tool_name'] == 'check_availability'
+    assert tool_call_payloads[0]['label'] == 'Checking appointment availability'
+
+    status_payloads = [v for p, v in parsed if p == PREFIX_STATUS]
+    assert status_payloads[0]['tool_name'] == 'check_availability'
+    assert status_payloads[0]['phase'] == 'running'
+    assert status_payloads[0]['state'] == 'active'
+
     # Check tool_result has availability data
     tool_results = [(p, v) for p, v in parsed if p == PREFIX_TOOL_RESULT]
-    assert len(tool_results) >= 1
-    assert tool_results[0][1]['ui_kind'] == 'availability'
-    assert tool_results[0][1]['result']['type'] == 'availability'
-    assert tool_results[0][1]['result']['availability_source'] == 'open_slots'
-    assert isinstance(tool_results[0][1]['result']['available_slots_utc'], list)
+    assert len(tool_results) >= 3
+    assert tool_results[0][1]['tool_call_id'] == 'tool-call-1'
+    assert tool_results[0][1]['result']['ui_state'] == 'skeleton'
+    assert tool_results[1][1]['result']['ui_state'] == 'partial'
+    assert tool_results[-1][1]['ui_kind'] == 'availability'
+    assert tool_results[-1][1]['result']['type'] == 'availability'
+    assert tool_results[-1][1]['result']['ui_state'] == 'final'
+    assert tool_results[-1][1]['result']['availability_source'] == 'open_slots'
+    assert isinstance(tool_results[-1][1]['result']['available_slots_utc'], list)
 
     assert gateway.calls == 2
 
@@ -485,8 +500,9 @@ def test_stream_response_emits_tool_result_for_visible_provider_tool(monkeypatch
 
     tool_results = [(p, v) for p, v in parsed if p == PREFIX_TOOL_RESULT]
     assert len(tool_results) >= 1
-    assert tool_results[0][1]['ui_kind'] == 'providers'
-    assert isinstance(tool_results[0][1]['result'], list)
+    assert tool_results[-1][1]['ui_kind'] == 'providers'
+    assert tool_results[-1][1]['result']['ui_state'] == 'final'
+    assert isinstance(tool_results[-1][1]['result']['providers'], list)
 
 
 def test_stream_response_returns_fallback_text_on_provider_error(monkeypatch):

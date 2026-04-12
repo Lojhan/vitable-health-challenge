@@ -6,6 +6,10 @@ import ChatStructuredSection from '../ChatStructuredSection.vue'
 
 const _interactionStore = new Map()
 
+vi.mock('../../../../stores/chat', () => ({
+	useChatStore: () => ({ isStreaming: false }),
+}))
+
 vi.mock('../../../chat/structured/services/structuredInteractionApi', () => ({
 	fetchStructuredInteractionState: vi.fn(async (id) => ({
 		interaction_id: id ?? '',
@@ -19,6 +23,40 @@ vi.mock('../../../chat/structured/services/structuredInteractionApi', () => ({
 }))
 
 describe('ChatStructuredSection', () => {
+	it('renders provider skeleton progress state', () => {
+		const wrapper = mount(ChatStructuredSection, {
+			props: {
+				payload: {
+					kind: 'providers',
+					state: 'skeleton',
+					progressLabel: 'Reviewing provider options',
+					interactionId: 'provider-progress',
+					data: [],
+				},
+			},
+		})
+
+		expect(wrapper.text()).toContain('Reviewing provider options')
+		expect(wrapper.text()).toContain('Available providers')
+	})
+
+	it('renders provider error state', () => {
+		const wrapper = mount(ChatStructuredSection, {
+			props: {
+				payload: {
+					kind: 'providers',
+					state: 'error',
+					errorMessage: 'Provider service is temporarily unavailable.',
+					interactionId: 'provider-error',
+					data: [],
+				},
+			},
+		})
+
+		expect(wrapper.text()).toContain('Provider options unavailable')
+		expect(wrapper.text()).toContain('Provider service is temporarily unavailable.')
+	})
+
 	it('renders provider explorer and emits quick reply after selecting provider in details view', async () => {
 		vi.useFakeTimers()
 

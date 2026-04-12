@@ -231,8 +231,104 @@ def parse_datetime_input(raw_value: str) -> datetime:
         return normalize_datetime(parsed)
 
 
+def _normalize_range_separator(date_range_str: str) -> str:
+    normalized = date_range_str.strip()
+    if '/' in normalized:
+        return normalized
+
+    separator_match = re.search(
+        r'(?P<left>.+?)\s+(?:to|through|until)\s+(?P<right>.+)',
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if not separator_match:
+        return normalized
+
+    left = separator_match.group('left').strip()
+    right = separator_match.group('right').strip()
+    if not left or not right:
+        return normalized
+
+    return f'{left}/{right}'
+
+
+def _resolve_named_date_window(date_range_str: str) -> tuple[datetime, datetime] | None:
+    normalized = date_range_str.strip().lower()
+    now = timezone.now().astimezone(UTC)
+
+    if normalized in {'this month', 'current month'}:
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if start.month == 12:
+            end = start.replace(year=start.year + 1, month=1)
+        else:
+            end = start.replace(month=start.month + 1)
+        return start, end
+
+    if normalized == 'next month':
+        if now.month == 12:
+            start = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        else:
+            start = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        if start.month == 12:
+            end = start.replace(year=start.year + 1, month=1)
+        else:
+            end = start.replace(month=start.month + 1)
+        return start, end
+
+    if normalized in {'this week', 'current week'}:
+        start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=7)
+        return start, end
+
+    if normalized == 'next week':
+        start = (now - timedelta(days=now.weekday()) + timedelta(days=7)).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        end = start + timedelta(days=7)
+        return start, end
+
+    month_match = re.fullmatch(
+        r'(?:rest of|end of)\s+(january|february|march|april|may|june|july|august|september|october|november|december)',
+        normalized,
+    )
+    if month_match:
+        month_names = {
+            'january': 1,
+            'february': 2,
+            'march': 3,
+            'april': 4,
+            'may': 5,
+            'june': 6,
+            'july': 7,
+            'august': 8,
+            'september': 9,
+            'october': 10,
+            'november': 11,
+            'december': 12,
+        }
+        target_month = month_names[month_match.group(1)]
+        target_year = now.year + (1 if target_month < now.month else 0)
+        start = now.replace(year=target_year, month=target_month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        if normalized.startswith('rest of') and target_month == now.month and target_year == now.year:
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if target_month == 12:
+            end = start.replace(year=target_year + 1, month=1, day=1)
+        else:
+            end = start.replace(month=target_month + 1, day=1)
+        return start, end
+
+    return None
+
+
 def resolve_date_range_input(date_range_str: str) -> tuple[datetime, datetime]:
-    normalized_range = date_range_str.strip()
+    named_window = _resolve_named_date_window(date_range_str)
+    if named_window is not None:
+        return named_window
+
+    normalized_range = _normalize_range_separator(date_range_str)
 
     if '/' in normalized_range:
         start_str, end_str = normalized_range.split('/', maxsplit=1)
