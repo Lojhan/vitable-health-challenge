@@ -1,5 +1,3 @@
-from typing import Any
-
 from chatbot.features.chat.application.contracts import ChatUnitOfWork
 from chatbot.features.core.application.contracts import BaseUseCase
 

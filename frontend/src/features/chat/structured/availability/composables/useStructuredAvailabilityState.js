@@ -1,59 +1,78 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { useChatStore } from '../../../../stores/chat'
+import { useChatStore } from '../../../../../stores/chat'
 import {
-	fetchAvailabilityCalendar,
-	fetchAvailabilityDaySlots,
-} from '../services/mockStructuredApi'
+	buildAvailabilityCalendar,
+	buildAvailabilityDaySlots,
+	findBestAvailableDay,
+	getAvailabilityTotalSlots,
+	normalizeFocusDate,
+	normalizePeriod,
+	parseUtcDateTime,
+	toHumanDayTitle,
+} from '../lib/availabilityModel'
 import {
 	fetchStructuredInteractionState,
 	saveStructuredInteractionState,
-} from '../services/structuredInteractionApi'
+} from '../../services/structuredInteractionApi'
 
 function getMonthStartIso(date = new Date()) {
-	const year = date.getFullYear()
-	const month = String(date.getMonth() + 1).padStart(2, '0')
+	const year = date.getUTCFullYear()
+	const month = String(date.getUTCMonth() + 1).padStart(2, '0')
 	return `${year}-${month}-01`
 }
 
 function startOfWeek(date) {
-	const dayIndex = date.getDay()
+	const dayIndex = date.getUTCDay()
 	const weekStart = new Date(date)
-	weekStart.setDate(weekStart.getDate() - dayIndex)
+	weekStart.setUTCDate(weekStart.getUTCDate() - dayIndex)
 	return weekStart
 }
 
 function formatIsoDay(date) {
-	const year = date.getFullYear()
-	const month = String(date.getMonth() + 1).padStart(2, '0')
-	const day = String(date.getDate()).padStart(2, '0')
+	const year = date.getUTCFullYear()
+	const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+	const day = String(date.getUTCDate()).padStart(2, '0')
 	return `${year}-${month}-${day}`
 }
 
 function parseIsoDay(isoDay) {
-	return new Date(`${isoDay}T00:00:00`)
+	return new Date(`${isoDay}T00:00:00Z`)
 }
 
 function shiftMonthStart(monthStartIso, deltaMonths) {
-	const base = new Date(`${monthStartIso}T00:00:00`)
-	const shifted = new Date(base.getFullYear(), base.getMonth() + deltaMonths, 1)
+	const base = new Date(`${monthStartIso}T00:00:00Z`)
+	const shifted = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + deltaMonths, 1))
 	return getMonthStartIso(shifted)
 }
 
 function formatHumanDate(isoDay) {
-	const parsed = new Date(`${isoDay}T00:00:00`)
+	const parsed = parseIsoDay(isoDay)
 	return new Intl.DateTimeFormat(undefined, {
 		weekday: 'short',
 		month: 'short',
 		day: 'numeric',
+		timeZone: 'UTC',
 	}).format(parsed)
 }
 
-export function useStructuredAvailability(payload) {
+function isAvailabilitySelectionKind(candidate) {
+	return String(candidate ?? '').trim().startsWith('availability')
+}
+
+export function useStructuredAvailabilityState(payload, options = {}) {
 	const interactionId = computed(() => String(payload?.interactionId ?? '').trim())
+	const payloadKind = computed(() => String(payload?.kind ?? 'availability'))
 	const timezone = computed(() => payload?.data?.timezone ?? 'UTC')
-	const groupedHumanUtc = computed(() => payload?.data?.grouped_human_utc ?? [])
-	const monthStartIso = ref(getMonthStartIso())
+	const availabilityData = computed(() => payload?.data ?? {})
+	const availabilitySignature = computed(() => JSON.stringify(availabilityData.value ?? {}))
+	const focusDateIso = computed(() => normalizeFocusDate(
+		options.focusDateIso ?? availabilityData.value.focus_date_utc ?? availabilityData.value.focus_datetime_utc,
+	))
+	const focusPeriod = computed(() => normalizePeriod(options.focusPeriod ?? availabilityData.value.focus_period))
+	const totalSlots = computed(() => getAvailabilityTotalSlots(availabilityData.value))
+	const initialMonthDate = parseUtcDateTime(availabilityData.value.requested_window_start_utc)
+	const monthStartIso = ref(getMonthStartIso(initialMonthDate ?? new Date()))
 	const calendarDays = ref([])
 	const weekStartIso = ref('')
 	const selectedDayIso = ref('')
@@ -66,98 +85,12 @@ export function useStructuredAvailability(payload) {
 	const isLoadingSavedSelection = ref(false)
 	const isSavingSelection = ref(false)
 	const isMobile = ref(false)
-	const viewMode = ref('month')
 	let mediaQueryList = null
 	let hasHydratedSavedSelection = false
-
-	const calendarByIsoDay = computed(() => {
-		const map = new Map()
-		calendarDays.value.forEach((day) => {
-			map.set(day.iso_day, day)
-		})
-		return map
-	})
-
-	const weekRows = computed(() => {
-		const rows = []
-		let row = []
-
-		const firstWeekday = calendarDays.value[0]?.weekday_index ?? 0
-		for (let i = 0; i < firstWeekday; i += 1) {
-			row.push(null)
-		}
-
-		calendarDays.value.forEach((day) => {
-			row.push(day)
-			if (row.length === 7) {
-				rows.push(row)
-				row = []
-			}
-		})
-
-		if (row.length > 0) {
-			while (row.length < 7) {
-				row.push(null)
-			}
-			rows.push(row)
-		}
-
-		return rows
-	})
-
-	const monthTitle = computed(() => {
-		const parsed = new Date(`${monthStartIso.value}T00:00:00`)
-		return new Intl.DateTimeFormat(undefined, {
-			month: 'long',
-			year: 'numeric',
-		}).format(parsed)
-	})
-
-	const weekTitle = computed(() => {
-		if (!weekStartIso.value) {
-			return ''
-		}
-
-		const weekStart = parseIsoDay(weekStartIso.value)
-		const weekEnd = new Date(weekStart)
-		weekEnd.setDate(weekEnd.getDate() + 6)
-
-		const formatter = new Intl.DateTimeFormat(undefined, {
-			month: 'short',
-			day: 'numeric',
-		})
-
-		return `${formatter.format(weekStart)} - ${formatter.format(weekEnd)}`
-	})
-
-	const weekDays = computed(() => {
-		if (!weekStartIso.value) {
-			return []
-		}
-
-		const start = parseIsoDay(weekStartIso.value)
-		const formatter = new Intl.DateTimeFormat(undefined, { weekday: 'short' })
-
-		return Array.from({ length: 7 }, (_value, index) => {
-			const dayDate = new Date(start)
-			dayDate.setDate(start.getDate() + index)
-			const isoDay = formatIsoDay(dayDate)
-			const source = calendarByIsoDay.value.get(isoDay)
-
-			return {
-				iso_day: isoDay,
-				display_day: dayDate.getDate(),
-				weekday_label: formatter.format(dayDate),
-				is_available: source?.is_available ?? false,
-				slot_count: source?.slot_count ?? 0,
-			}
-		})
-	})
 
 	const selectedDayHumanDate = computed(() => (
 		selectedDayIso.value ? formatHumanDate(selectedDayIso.value) : ''
 	))
-
 	const hasPastSelection = computed(() => Boolean(selectedSlotSelection.value))
 
 	function setWeekStartFromDay(isoDay) {
@@ -172,7 +105,6 @@ export function useStructuredAvailability(payload) {
 
 	function syncMobileState(event) {
 		isMobile.value = Boolean(event?.matches)
-		viewMode.value = isMobile.value ? 'week' : 'month'
 	}
 
 	function setupViewportWatcher() {
@@ -210,10 +142,12 @@ export function useStructuredAvailability(payload) {
 	async function loadCalendar() {
 		isLoadingCalendar.value = true
 		try {
-			const response = await fetchAvailabilityCalendar({
-				monthStartIso: monthStartIso.value,
-				groupedHumanUtc: groupedHumanUtc.value,
-			})
+			const response = {
+				calendar: buildAvailabilityCalendar({
+					monthStartIso: monthStartIso.value,
+					payloadData: availabilityData.value,
+				}),
+			}
 			calendarDays.value = response.calendar.days
 
 			if (selectedDayIso.value && !response.calendar.days.some((day) => day.iso_day === selectedDayIso.value)) {
@@ -231,15 +165,6 @@ export function useStructuredAvailability(payload) {
 		}
 	}
 
-	function syncWeekStartAfterMonthChange() {
-		if (selectedDayIso.value) {
-			setWeekStartFromDay(selectedDayIso.value)
-			return
-		}
-
-		setWeekStartFromDay(calendarDays.value[0]?.iso_day ?? '')
-	}
-
 	async function loadSlotsForDay(isoDay) {
 		if (!isoDay) {
 			daySlots.value = []
@@ -249,10 +174,13 @@ export function useStructuredAvailability(payload) {
 
 		isLoadingSlots.value = true
 		try {
-			const response = await fetchAvailabilityDaySlots({
-				isoDay,
-				groupedHumanUtc: groupedHumanUtc.value,
-			})
+			const response = {
+				day_slots: buildAvailabilityDaySlots({
+					isoDay,
+					payloadData: availabilityData.value,
+					period: options.filterToFocusPeriod ? focusPeriod.value : '',
+				}),
+			}
 			selectedDayTitle.value = response.day_slots.title
 			daySlots.value = response.day_slots.slots
 			selectedSlotId.value = ''
@@ -264,63 +192,17 @@ export function useStructuredAvailability(payload) {
 	async function goToPreviousMonth() {
 		monthStartIso.value = shiftMonthStart(monthStartIso.value, -1)
 		await loadCalendar()
-		syncWeekStartAfterMonthChange()
+		if (selectedDayIso.value) {
+			setWeekStartFromDay(selectedDayIso.value)
+		}
 	}
 
 	async function goToNextMonth() {
 		monthStartIso.value = shiftMonthStart(monthStartIso.value, 1)
 		await loadCalendar()
-		syncWeekStartAfterMonthChange()
-	}
-
-	async function ensureMonthForDay(isoDay) {
-		const targetMonthStartIso = getMonthStartIso(parseIsoDay(isoDay))
-		if (targetMonthStartIso === monthStartIso.value) {
-			return
-		}
-
-		monthStartIso.value = targetMonthStartIso
-		await loadCalendar()
-	}
-
-	async function goToPreviousWeek() {
-		const currentAnchorIsoDay = selectedDayIso.value || weekStartIso.value
-		if (!currentAnchorIsoDay) {
-			return
-		}
-
-		const previousDay = parseIsoDay(currentAnchorIsoDay)
-		previousDay.setDate(previousDay.getDate() - 7)
-		const targetIsoDay = formatIsoDay(previousDay)
-
-		await ensureMonthForDay(targetIsoDay)
-
 		if (selectedDayIso.value) {
-			await selectDay(targetIsoDay)
-			return
+			setWeekStartFromDay(selectedDayIso.value)
 		}
-
-		setWeekStartFromDay(targetIsoDay)
-	}
-
-	async function goToNextWeek() {
-		const currentAnchorIsoDay = selectedDayIso.value || weekStartIso.value
-		if (!currentAnchorIsoDay) {
-			return
-		}
-
-		const nextDay = parseIsoDay(currentAnchorIsoDay)
-		nextDay.setDate(nextDay.getDate() + 7)
-		const targetIsoDay = formatIsoDay(nextDay)
-
-		await ensureMonthForDay(targetIsoDay)
-
-		if (selectedDayIso.value) {
-			await selectDay(targetIsoDay)
-			return
-		}
-
-		setWeekStartFromDay(targetIsoDay)
 	}
 
 	async function selectDay(isoDay) {
@@ -346,7 +228,7 @@ export function useStructuredAvailability(payload) {
 		isLoadingSavedSelection.value = true
 		try {
 			const response = await fetchStructuredInteractionState(interactionId.value)
-			if (response.selection?.kind === 'availability') {
+			if (isAvailabilitySelectionKind(response.selection?.kind)) {
 				selectedSlotSelection.value = response.selection
 			}
 		} finally {
@@ -364,12 +246,13 @@ export function useStructuredAvailability(payload) {
 		try {
 			const response = await saveStructuredInteractionState({
 				interactionId: interactionId.value,
-				kind: 'availability',
+				kind: payloadKind.value,
 				selection: {
 					day_iso_utc: selectedDayIso.value,
 					day_human: selectedDayHumanDate.value,
 					slot_id: slot.id,
 					slot_label: slot.label,
+					slot_iso_utc: slot.iso_datetime_utc,
 					timezone: timezone.value,
 				},
 			})
@@ -389,7 +272,10 @@ export function useStructuredAvailability(payload) {
 		selectedDayIso.value = persistedDayIso
 		setWeekStartFromDay(persistedDayIso)
 
-		await ensureMonthForDay(persistedDayIso)
+		if (monthStartIso.value !== getMonthStartIso(parseIsoDay(persistedDayIso))) {
+			monthStartIso.value = getMonthStartIso(parseIsoDay(persistedDayIso))
+			await loadCalendar()
+		}
 		await loadSlotsForDay(persistedDayIso)
 
 		if (selectedSlotSelection.value.slot_id) {
@@ -397,24 +283,30 @@ export function useStructuredAvailability(payload) {
 		}
 	}
 
-	function setViewMode(mode) {
-		if (mode !== 'week' && mode !== 'month') {
-			return
-		}
-
-		viewMode.value = mode
+	function resolveDefaultDayIso() {
+		return findBestAvailableDay(availabilityData.value, {
+			focusDateIso: focusDateIso.value,
+			period: options.filterToFocusPeriod ? focusPeriod.value : '',
+		})
 	}
 
 	watch(
-		groupedHumanUtc,
+		[availabilitySignature, focusDateIso, focusPeriod],
 		async () => {
-			const persistedDayIso = selectedSlotSelection.value?.day_iso_utc ?? ''
 			selectedDayIso.value = ''
 			weekStartIso.value = ''
 			await loadCalendar()
 
-			if (hasHydratedSavedSelection && persistedDayIso) {
+			if (hasHydratedSavedSelection && selectedSlotSelection.value?.day_iso_utc) {
 				await hydrateSavedSelectionIntoCalendar()
+				return
+			}
+
+			const defaultDayIso = resolveDefaultDayIso()
+			if (defaultDayIso) {
+				selectedDayIso.value = defaultDayIso
+				setWeekStartFromDay(defaultDayIso)
+				await loadSlotsForDay(defaultDayIso)
 			}
 		},
 		{ immediate: true },
@@ -425,7 +317,6 @@ export function useStructuredAvailability(payload) {
 		const chatStore = useChatStore()
 		if (!chatStore.isStreaming) {
 			await loadSavedSelection()
-
 			if (selectedSlotSelection.value?.day_iso_utc) {
 				await hydrateSavedSelectionIntoCalendar()
 			}
@@ -438,10 +329,15 @@ export function useStructuredAvailability(payload) {
 
 	return {
 		timezone,
-		monthTitle,
-		weekTitle,
-		weekRows,
-		weekDays,
+		totalSlots,
+		focusDateIso,
+		focusPeriod,
+		monthStartIso,
+		monthTitle: computed(() => new Intl.DateTimeFormat(undefined, {
+			month: 'long',
+			year: 'numeric',
+			timeZone: 'UTC',
+		}).format(parseIsoDay(monthStartIso.value))),
 		selectedDayIso,
 		selectedDayHumanDate,
 		selectedDayTitle,
@@ -454,14 +350,38 @@ export function useStructuredAvailability(payload) {
 		isLoadingSavedSelection,
 		isSavingSelection,
 		isMobile,
-		viewMode,
+		weekRows: computed(() => {
+			const rows = []
+			let row = []
+			const firstWeekday = calendarDays.value[0]?.weekday_index ?? 0
+			for (let index = 0; index < firstWeekday; index += 1) {
+				row.push(null)
+			}
+			calendarDays.value.forEach((day) => {
+				row.push(day)
+				if (row.length === 7) {
+					rows.push(row)
+					row = []
+				}
+			})
+			if (row.length > 0) {
+				while (row.length < 7) {
+					row.push(null)
+				}
+				rows.push(row)
+			}
+			return rows
+		}),
 		goToPreviousMonth,
 		goToNextMonth,
-		goToPreviousWeek,
-		goToNextWeek,
 		selectDay,
 		selectSlot,
 		saveSlotSelection,
-		setViewMode,
+		resolveDefaultDayTitle: computed(() => {
+			if (selectedDayIso.value) {
+				return toHumanDayTitle(selectedDayIso.value)
+			}
+			return ''
+		}),
 	}
 }

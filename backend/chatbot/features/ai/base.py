@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 from typing import ClassVar
 
 from pydantic import BaseModel, field_validator
@@ -30,12 +31,12 @@ class BaseAgentInterface(ABC):
         return OPENAI_TOOL_SCHEMAS
 
     @abstractmethod
-    async def generate_response(
+    def stream_response(
         self,
         prompt: str,
         history: list[dict[str, str]] | None = None,
-    ) -> str:
-        """Generate an AI response for the provided prompt."""
+    ) -> AsyncGenerator[str]:
+        """Stream an AI response for the provided prompt."""
 
     @classmethod
     def validate_tool_arguments(

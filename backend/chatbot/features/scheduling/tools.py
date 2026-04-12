@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC
 from typing import Any, cast
 
 from pydantic import BaseModel, ValidationInfo, field_validator
@@ -6,6 +6,7 @@ from pydantic import BaseModel, ValidationInfo, field_validator
 from chatbot.features.ai.tooling import ToolContract
 from chatbot.features.core.domain.validation import require_non_blank_text
 from chatbot.features.scheduling.application.common import (
+    AvailabilityPayload,
     CancelAppointmentResult,
     FutureAppointmentsPayload,
     ProviderSchema,
@@ -17,8 +18,8 @@ from chatbot.features.scheduling.application.use_cases.book_appointment import (
 from chatbot.features.scheduling.application.use_cases.cancel_user_appointment import (
     CancelUserAppointmentUseCase,
 )
-from chatbot.features.scheduling.application.use_cases.check_availability import (
-    CheckAvailabilityUseCase,
+from chatbot.features.scheduling.application.use_cases.describe_availability import (
+    DescribeAvailabilityUseCase,
 )
 from chatbot.features.scheduling.application.use_cases.list_providers import (
     ListProvidersUseCase,
@@ -92,6 +93,10 @@ class ListProvidersInputSchema(BaseModel):
     pass
 
 
+class ShowProvidersForSelectionInputSchema(BaseModel):
+    pass
+
+
 class CancelMyAppointmentInputSchema(BaseModel):
     appointment_id: int
 
@@ -126,8 +131,11 @@ def list_providers() -> list[ProviderSchema]:
     return ListProvidersUseCase(uow_factory=DjangoSchedulingUnitOfWork).execute()
 
 
-def check_availability(date_range_str: str, provider_id: int | None = None) -> list[str]:
-    return CheckAvailabilityUseCase(uow_factory=DjangoSchedulingUnitOfWork).execute(
+def describe_availability(
+    date_range_str: str,
+    provider_id: int | None = None,
+) -> AvailabilityPayload:
+    return DescribeAvailabilityUseCase(uow_factory=DjangoSchedulingUnitOfWork).execute(
         date_range_str=date_range_str,
         provider_id=provider_id,
     )
@@ -189,83 +197,6 @@ def update_user_appointment(
     )
 
 
-def _format_availability_payload(slots: list[str]) -> dict[str, object]:
-    def period_for_hour(hour: int) -> str:
-        if 5 <= hour <= 12:
-            return 'morning'
-        if 13 <= hour <= 17:
-            return 'afternoon'
-        return 'night'
-
-    def format_hour_label(hour: int) -> str:
-        label = datetime(2026, 1, 1, hour, 0, 0).strftime('%I:%M %p')
-        return label.lstrip('0')
-
-    parsed_slots: list[datetime] = [datetime.fromisoformat(slot) for slot in slots]
-    grouped: dict[tuple[str, str, str], list[int]] = {}
-
-    for parsed in parsed_slots:
-        day_label = parsed.strftime('%A, %B %d')
-        day_iso = parsed.strftime('%Y-%m-%d')
-        period = period_for_hour(parsed.hour)
-        grouped.setdefault((day_iso, day_label, period), []).append(parsed.hour)
-
-    grouped_human_utc: list[dict[str, object]] = []
-    for (day_iso, day_label, period), hours in grouped.items():
-        sorted_hours = sorted(set(hours))
-        ranges: list[str] = []
-        if sorted_hours:
-            range_start = sorted_hours[0]
-            range_end = sorted_hours[0]
-            for hour in sorted_hours[1:]:
-                if hour == range_end + 1:
-                    range_end = hour
-                else:
-                    ranges.append(
-                        f'{format_hour_label(range_start)} - {format_hour_label(range_end + 1)}'
-                    )
-                    range_start = hour
-                    range_end = hour
-
-            ranges.append(
-                f'{format_hour_label(range_start)} - {format_hour_label(range_end + 1)}'
-            )
-
-        grouped_human_utc.append(
-            {
-                'day_iso_utc': day_iso,
-                'day': day_label,
-                'period': period,
-                'windows_utc': ranges,
-                'slot_count': len(sorted_hours),
-            }
-        )
-
-    period_order = {'morning': 0, 'afternoon': 1, 'night': 2}
-    grouped_human_utc.sort(
-        key=lambda item: (
-            str(item['day_iso_utc']),
-            period_order.get(str(item['period']), 99),
-        )
-    )
-
-    summary_lines = [
-        (
-            f"{item['day']} ({str(item['period']).capitalize()}): "
-            f"{', '.join(cast(list[str], item['windows_utc']))}"
-        )
-        for item in grouped_human_utc
-    ]
-
-    return {
-        'total_slots': len(slots),
-        'grouped_human_utc': grouped_human_utc,
-        'summary_lines': summary_lines,
-        'timezone': 'UTC',
-        'appointment_duration_note': '*Appointments last 1h.',
-    }
-
-
 def _execute_resolve_datetime_reference(
     arguments: dict[str, Any],
     _user_id: int | None,
@@ -277,14 +208,21 @@ def _execute_check_availability(
     arguments: dict[str, Any],
     _user_id: int | None,
 ) -> object:
-    slots = check_availability(
+    return describe_availability(
         date_range_str=arguments['date_range_str'],
         provider_id=arguments.get('provider_id'),
     )
-    return _format_availability_payload(slots)
 
 
 def _execute_list_providers(arguments: dict[str, Any], _user_id: int | None) -> object:
+    _ = arguments
+    return list_providers()
+
+
+def _execute_show_providers_for_selection(
+    arguments: dict[str, Any],
+    _user_id: int | None,
+) -> object:
     _ = arguments
     return list_providers()
 
@@ -396,11 +334,22 @@ SCHEDULING_TOOL_CONTRACTS = [
     ToolContract(
         name='list_providers',
         description=(
-            'List all available healthcare providers with their name, specialty, '
-            'and provider_id. Call this before scheduling to let the user choose '
-            'a provider.'
+            'Resolve available healthcare providers into provider_id values for '
+            'internal scheduling workflow steps, including matching a provider name '
+            'mentioned by the user. This tool is backend-only and should not be used '
+            'when you want to show a provider list to the user.'
         ),
         input_schema=ListProvidersInputSchema,
         executor=_execute_list_providers,
+    ),
+    ToolContract(
+        name='show_providers_for_selection',
+        description=(
+            'Show the user a list of available healthcare providers with name, '
+            'specialty, and provider_id when they explicitly ask to browse or choose '
+            'from provider options.'
+        ),
+        input_schema=ShowProvidersForSelectionInputSchema,
+        executor=_execute_show_providers_for_selection,
     ),
 ]

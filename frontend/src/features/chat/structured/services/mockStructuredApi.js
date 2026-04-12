@@ -89,13 +89,6 @@ const PROVIDER_PROFILES = {
 	},
 }
 
-const SLOT_CATALOG_BY_PERIOD = {
-	morning: ['08:00', '09:00', '10:00', '11:00', '12:00'],
-	afternoon: ['13:00', '14:00', '15:00', '16:00', '17:00'],
-	night: ['18:00', '19:00', '20:00'],
-	evening: ['18:00', '19:00', '20:00'],
-}
-
 function respond(data) {
 	return new Promise((resolve) => {
 		setTimeout(() => resolve(data), MOCK_NETWORK_DELAY_MS)
@@ -178,79 +171,3 @@ export async function fetchProviderProfile(providerId) {
 	})
 }
 
-function formatIsoDay(date) {
-	const year = date.getFullYear()
-	const month = String(date.getMonth() + 1).padStart(2, '0')
-	const day = String(date.getDate()).padStart(2, '0')
-	return `${year}-${month}-${day}`
-}
-
-function buildMonthCalendar({ monthStartIso, groupedHumanUtc = [] }) {
-	const monthStartDate = new Date(`${monthStartIso}T00:00:00`)
-	const firstDay = new Date(monthStartDate.getFullYear(), monthStartDate.getMonth(), 1)
-	const nextMonth = new Date(monthStartDate.getFullYear(), monthStartDate.getMonth() + 1, 1)
-	const byIsoDay = new Map(
-		groupedHumanUtc.map((entry) => [entry.day_iso_utc, entry]),
-	)
-
-	const days = []
-	for (let d = new Date(firstDay); d < nextMonth; d.setDate(d.getDate() + 1)) {
-		const isoDay = formatIsoDay(d)
-		const source = byIsoDay.get(isoDay)
-		days.push({
-			iso_day: isoDay,
-			display_day: d.getDate(),
-			weekday_index: d.getDay(),
-			is_available: Boolean(source),
-			slot_count: source?.slot_count ?? 0,
-			period: source?.period ?? null,
-		})
-	}
-
-	return {
-		month_start_iso: monthStartIso,
-		days,
-	}
-}
-
-function buildSlotsForDay({ isoDay, groupedHumanUtc = [] }) {
-	const source = groupedHumanUtc.find((entry) => entry.day_iso_utc === isoDay)
-	if (!source) {
-		return {
-			iso_day: isoDay,
-			title: 'No availability',
-			slots: [],
-		}
-	}
-
-	const period = String(source.period ?? 'morning').toLowerCase()
-	const catalog = SLOT_CATALOG_BY_PERIOD[period] ?? SLOT_CATALOG_BY_PERIOD.morning
-	const slots = catalog.slice(0, source.slot_count).map((time, index) => ({
-		id: `${isoDay}-${time}`,
-		time,
-		window: source.windows_utc?.[0] ?? '',
-		label: `${time} UTC`,
-		available: index < source.slot_count,
-	}))
-
-	return {
-		iso_day: isoDay,
-		title: `${source.day} (${period})`,
-		slots,
-	}
-}
-
-// Mock endpoints for availability calendar rendering and slot selection.
-export async function fetchAvailabilityCalendar({ monthStartIso, groupedHumanUtc } = {}) {
-	return respond({
-		endpoint: '/api/chat/availability/calendar',
-		calendar: buildMonthCalendar({ monthStartIso, groupedHumanUtc }),
-	})
-}
-
-export async function fetchAvailabilityDaySlots({ isoDay, groupedHumanUtc } = {}) {
-	return respond({
-		endpoint: '/api/chat/availability/day-slots',
-		day_slots: buildSlotsForDay({ isoDay, groupedHumanUtc }),
-	})
-}

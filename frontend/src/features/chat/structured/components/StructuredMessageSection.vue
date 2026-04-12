@@ -1,6 +1,8 @@
 <script setup>
 import StructuredAppointmentsPanel from './StructuredAppointmentsPanel.vue'
-import StructuredAvailabilityPanel from './StructuredAvailabilityPanel.vue'
+import StructuredAvailabilityDayPanel from '../availability/components/StructuredAvailabilityDayPanel.vue'
+import StructuredAvailabilityPanel from '../availability/components/StructuredAvailabilityPanel.vue'
+import StructuredAvailabilitySlotsPanel from '../availability/components/StructuredAvailabilitySlotsPanel.vue'
 import StructuredJsonPanel from './StructuredJsonPanel.vue'
 import StructuredProvidersPanel from './StructuredProvidersPanel.vue'
 
@@ -23,6 +25,16 @@ const emit = defineEmits(['quick-reply'])
 		/>
 		<StructuredAvailabilityPanel
 			v-else-if="payload.kind === 'availability'"
+			:payload="payload"
+			@quick-reply="emit('quick-reply', $event)"
+		/>
+		<StructuredAvailabilityDayPanel
+			v-else-if="payload.kind === 'availability_day'"
+			:payload="payload"
+			@quick-reply="emit('quick-reply', $event)"
+		/>
+		<StructuredAvailabilitySlotsPanel
+			v-else-if="payload.kind === 'availability_slots'"
 			:payload="payload"
 			@quick-reply="emit('quick-reply', $event)"
 		/>

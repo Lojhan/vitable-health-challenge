@@ -18,8 +18,8 @@ from chatbot.features.chat.application.use_cases.prepare_chat_turn import Prepar
 from chatbot.features.chat.application.use_cases.save_structured_interaction import (
     SaveStructuredInteractionUseCase,
 )
-from chatbot.features.chat.models import ChatMessage
 from chatbot.features.chat.infrastructure.unit_of_work.django_chat import DjangoChatUnitOfWork
+from chatbot.features.chat.models import ChatMessage
 from chatbot.features.chat.stream_protocol import (
     PREFIX_ERROR,
     PREFIX_TEXT_DELTA,

@@ -1,6 +1,7 @@
+import asyncio
 from collections.abc import AsyncGenerator
 
-from chatbot.features.chat.sse import single_chunk_response, stream_async_generator, to_sse_chunk
+from chatbot.features.chat.sse import single_chunk_response, stream_response_async, to_sse_chunk
 
 
 def test_to_sse_chunk_formats_single_line():
@@ -15,7 +16,7 @@ def test_single_chunk_response_returns_sse_bytes():
     assert list(single_chunk_response('hello')) == [b'data: hello\n\n']
 
 
-def test_stream_async_generator_collects_and_formats_chunks():
+def test_stream_response_async_collects_and_formats_chunks():
     closed = False
     collected: list[str] = []
 
@@ -29,9 +30,17 @@ def test_stream_async_generator_collects_and_formats_chunks():
     def on_complete(chunks) -> None:
         collected.extend(chunks)
 
-    streamed = b''.join(
-        stream_async_generator(generator(), on_close=on_close, on_complete=on_complete)
-    ).decode()
+    async def collect_stream() -> str:
+        chunks = [
+            chunk async for chunk in stream_response_async(
+                generator(),
+                on_close=on_close,
+                on_complete=on_complete,
+            )
+        ]
+        return b''.join(chunks).decode()
+
+    streamed = asyncio.run(collect_stream())
 
     assert streamed == 'data: hello\n\n'
     assert closed is True

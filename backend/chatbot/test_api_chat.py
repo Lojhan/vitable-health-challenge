@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 from collections.abc import Iterable
 from typing import Any, cast
@@ -17,8 +18,8 @@ from chatbot.features.chat.composition import (
 )
 from chatbot.features.chat.message_burst import FRONTEND_BURST_SEPARATOR_TOKEN
 from chatbot.features.chat.models import ChatMessage, ChatSession, StructuredInteraction
-from chatbot.features.chat.sse import stream_async_generator, to_sse_chunk
-from chatbot.features.chat.stream_protocol import encode_text_delta, encode_finish
+from chatbot.features.chat.sse import stream_response_async, to_sse_chunk
+from chatbot.features.chat.stream_protocol import encode_finish, encode_text_delta
 from chatbot.features.scheduling.models import Appointment
 from chatbot.features.scheduling.tools import book_appointment, list_user_appointments
 
@@ -233,13 +234,17 @@ def test_stream_async_generator_runs_on_close_callback_and_collects_chunks():
     def on_complete(chunks):
         collected_chunks.extend(chunks)
 
-    streamed = b''.join(
-        stream_async_generator(
-            generator(),
-            on_close=on_close,
-            on_complete=on_complete,
-        )
-    ).decode()
+    async def collect_stream() -> str:
+        chunks = [
+            chunk async for chunk in stream_response_async(
+                generator(),
+                on_close=on_close,
+                on_complete=on_complete,
+            )
+        ]
+        return b''.join(chunks).decode()
+
+    streamed = asyncio.run(collect_stream())
 
     assert streamed == 'data: hello\n\n'
     assert close_called is True

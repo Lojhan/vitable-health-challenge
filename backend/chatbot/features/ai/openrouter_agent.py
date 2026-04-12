@@ -1,11 +1,9 @@
-import json
 import logging
 import os
 from collections.abc import AsyncGenerator
 from datetime import UTC
 from typing import Any, cast
 
-from asgiref.sync import sync_to_async
 from django.utils import timezone
 from openai import APIStatusError, AsyncOpenAI
 
@@ -15,6 +13,14 @@ from chatbot.features.ai.application.runtime import (
     InMemoryTurnMemoryManager,
     StructuredAuditLogger,
     ToolExecutionSandbox,
+)
+from chatbot.features.ai.application.tool_runtime import (
+    ParsedToolCall,
+    ToolCallParser,
+    ToolExecutor,
+    build_assistant_tool_calls,
+    build_tool_message,
+    normalize_response_text,
 )
 from chatbot.features.ai.base import BaseAgentInterface, UserProfileSchema
 from chatbot.features.ai.infrastructure.gateway import (
@@ -35,7 +41,6 @@ from chatbot.features.chat.stream_protocol import (
 from chatbot.features.core.observability import (
     AuditEventData,
     StructuredLogger,
-    TimingContext,
     create_audit_event_async,
 )
 
@@ -47,6 +52,18 @@ class OpenRouterAgent(BaseAgentInterface):
     DEFAULT_MAX_TOOL_ROUNDS = 6
     DEFAULT_TIMEOUT_BUDGET_MS = 12000
     DEFAULT_PER_TOOL_LIMIT = 4
+    EXECUTION_BUDGET_EXCEEDED_RESPONSE = (
+        'I could not finalize your request within the execution budget. '
+        'Please try again.'
+    )
+    TOOL_BUDGET_EXCEEDED_RESPONSE = (
+        'I could not finalize your request because the tool call budget '
+        'was exceeded. Please try again.'
+    )
+    MAX_TOOL_ROUNDS_EXCEEDED_RESPONSE = (
+        'I could not finalize your request after multiple tool steps. '
+        'Please try again.'
+    )
     OUT_OF_SCOPE_RESPONSE = (
         'I can only help with healthcare triage and appointment support. '
         'I cannot help with that request.'
@@ -135,26 +152,32 @@ class OpenRouterAgent(BaseAgentInterface):
             'When presenting availability, report the exact number of slots based '
             'on tool output. Do not dump every returned slot unless the user explicitly '
             'asks for all slots. Do not say several when '
-            'there is only one. Prefer the grouped_human_utc tool output over raw '
-            'ISO datetimes for readability (for example, group by day and show 12-hour '
-            'times). Prefer period summaries like morning/afternoon/night with a '
-            'time window (for example, 9:00 AM - 12:00 PM), and include the '
-            'appointment_duration_note in scheduling responses. '
-            'AUTO-RENDERED TOOL RESULTS: When you call list_providers, check_availability, '
-            'or list_my_appointments, the results are automatically displayed to the user as '
+            'there is only one. The availability tool returns raw scheduling data '
+            '(for example RRULE availability, blocked slots, and the requested UTC '
+            'window) that the frontend renders for the user. Do not restate that raw '
+            'data as JSON, and include the appointment_duration_note in scheduling '
+            'responses when relevant. When you intentionally return structured '
+            'availability JSON yourself, use type availability for broad calendar '
+            'selection, availability_day for a specific date, and '
+            'availability_slots for a narrowed subset such as morning or afternoon, '
+            'while keeping the same raw scheduling fields. '
+            'AUTO-RENDERED TOOL RESULTS: When you call show_providers_for_selection, '
+            'check_availability, or list_my_appointments, the results are automatically displayed to the user as '
             'rich visual components (cards, tables, etc.). Do NOT repeat, re-list, dump as JSON, '
             'or narrate the returned data in your text response. Instead, provide only a brief '
             'contextual comment (e.g. "Here are some providers that match" or '
             '"I found available slots for next week"). The user can already see the full data '
             'in the rendered component.\n'
-            'PROVIDER WORKFLOW: When the user wants to schedule or check availability, '
-            'call list_providers first to discover available doctors. Present the '
-            'providers to the user and confirm their choice. Always pass the chosen '
-            'provider_id when calling check_availability, book_appointment, or '
-            'update_my_appointment. If the user expresses a preferred doctor by name, '
-            'match it to the provider_id from list_providers output before proceeding. '
-            'If the list_providers JSON output is already in the conversation history, '
-            'you do NOT need to call it again and can proceed directly.'
+            'PROVIDER WORKFLOW: Use list_providers as a silent backend-only lookup to '
+            'resolve provider_id values for scheduling steps, including matching a '
+            'doctor name mentioned by the user. Use show_providers_for_selection only '
+            'when the user explicitly asks to browse providers, compare options, or '
+            'pick from a visible list. Always pass the chosen provider_id when calling '
+            'check_availability, book_appointment, or update_my_appointment. If the '
+            'user expresses a preferred doctor by name, match it to the provider_id '
+            'from list_providers output before proceeding. If the silent list_providers '
+            'JSON output is already in the conversation history, you do NOT need to '
+            'call it again and can proceed directly.'
         )
 
         if self._user_profile is None:
@@ -188,281 +211,96 @@ class OpenRouterAgent(BaseAgentInterface):
     def backend_catches_emergency_override(response_text: str) -> bool:
         return response_text.strip() == '<EMERGENCY_OVERRIDE>'
 
-    @staticmethod
-    def _normalize_response_text(response_text: str) -> str:
-        normalized_response = (response_text or '').strip()
-        if not normalized_response:
-            normalized_response = 'I am here to help with your healthcare triage needs.'
-
-        return normalized_response
-
-    @staticmethod
-    def _tool_name(tool_call: object) -> str:
-        function: Any = getattr(tool_call, 'function', None)
-        if function is None and isinstance(tool_call, dict):
-            function = tool_call.get('function', {})
-        if function is None:
-            return ''
-        if hasattr(function, 'name'):
-            return cast(str, function.name)
-        if isinstance(function, dict):
-            return cast(str, function.get('name', ''))
-        return ''
-
-    @staticmethod
-    def _tool_arguments(tool_call: object) -> dict:
-        function: Any = getattr(tool_call, 'function', None)
-        if function is None and isinstance(tool_call, dict):
-            function = tool_call.get('function', {})
-
-        raw_arguments = getattr(function, 'arguments', None)
-        if raw_arguments is None and isinstance(function, dict):
-            raw_arguments = function.get('arguments', '{}')
-        return json.loads(raw_arguments or '{}')
-
-    def _execute_tool_call(self, tool_call: object) -> object:
-        tool_name = self._tool_name(tool_call)
-        arguments = self.validate_tool_arguments(
-            tool_name,
-            self._tool_arguments(tool_call),
-        )
-        executor = TOOL_EXECUTOR_BY_NAME.get(tool_name)
-        if executor is None:
-            raise ValueError(f'Unsupported tool call: {tool_name}')
-        return executor(arguments, self._user_id)
-
-    def _build_messages(
-        self,
-        prompt: str,
-        history: list[dict[str, str]] | None = None,
-    ) -> list[dict[str, object]]:
-        messages: list[dict[str, object]] = [
-            {'role': 'system', 'content': self._build_system_prompt()},
-        ]
-
-        for message in history or []:
-            role = message.get('role')
-            content = message.get('content', '')
-            if role in {'user', 'assistant'} and isinstance(content, str) and content:
-                messages.append({'role': role, 'content': content})
-
-        messages.append({'role': 'user', 'content': prompt})
-        return messages
-
-    @staticmethod
-    def _is_out_of_scope(prompt: str) -> bool:
-        normalized_prompt = prompt.lower()
-        healthcare_keywords = [
-            'health',
-            'symptom',
-            'sore throat',
-            'fever',
-            'cough',
-            'pain',
-            'doctor',
-            'nurse',
-            'triage',
-            'appointment',
-            'schedule',
-            'visit',
-            'insurance',
-            'medical',
-            'emergency',
-        ]
-        out_of_scope_keywords = [
-            'python',
-            'javascript',
-            'java code',
-            'bubble sort',
-            'algorithm',
-            'leetcode',
-            'sql query',
-            'write code',
-            'build a website',
-            'programming',
-        ]
-
-        has_healthcare_intent = any(
-            keyword in normalized_prompt for keyword in healthcare_keywords
-        )
-        has_out_of_scope_intent = any(
-            keyword in normalized_prompt for keyword in out_of_scope_keywords
-        )
-
-        return has_out_of_scope_intent and not has_healthcare_intent
-
-
-    async def generate_response(
-        self,
-        prompt: str,
-        history: list[dict[str, str]] | None = None,
-    ) -> str:
-        logger.info('ai.generate_response.started')
-
-        pre_policy = self._policy_engine.evaluate_pre_generation(prompt)
-        if pre_policy.final_response is not None:
-            self._audit_logger.log_turn_event(
-                event='pre_policy_short_circuit',
-                prompt=prompt,
-                data={'response': pre_policy.final_response},
-            )
-            logger.info('ai.generate_response.completed')
-            return pre_policy.final_response
-
-        messages = self._planner.build_messages(
-            system_prompt=self._build_system_prompt(),
-            prompt=prompt,
-            history=history,
-        )
-        allowed_tools = self._policy_engine.allowed_tool_names(
-            user_id=self._user_id,
-            available_tool_names=TOOL_EXECUTOR_BY_NAME.keys(),
-        )
-        sandbox = ToolExecutionSandbox(
+    def _build_sandbox(self) -> ToolExecutionSandbox:
+        return ToolExecutionSandbox(
             max_tool_rounds=self._max_tool_rounds,
             max_tool_calls=self._max_tool_calls,
             timeout_budget_ms=self._timeout_budget_ms,
             per_tool_limit=self.DEFAULT_PER_TOOL_LIMIT,
         )
 
-        for _ in range(sandbox.max_tool_rounds):
-            if not sandbox.has_time_budget():
-                logger.info('ai.generate_response.completed')
-                return (
-                    'I could not finalize your request within the execution budget. '
-                    'Please try again.'
-                )
-
-            completion = cast(
-                Any,
-                await self._gateway.create_chat_completion(
-                model=self._model,
-                messages=messages,
-                tools=self.get_tools(),
-                max_tokens=self._max_tokens,
-                ),
-            )
-            message = completion.choices[0].message
-            tool_calls = getattr(message, 'tool_calls', None) or []
-
-            if not tool_calls:
-                response = self._policy_engine.evaluate_post_generation(
-                    self._normalize_response_text(message.content or '')
-                )
-                self._memory_manager.remember(
-                    {'prompt': prompt, 'response': response, 'tool_calls': []}
-                )
-                self._audit_logger.log_turn_event(
-                    event='turn_completed',
-                    prompt=prompt,
-                    data={'model': self._model, 'tool_calls': 0},
-                )
-                logger.info('ai.generate_response.completed')
-                return response
-
-            if not sandbox.can_accept_calls(len(tool_calls)):
-                logger.info('ai.generate_response.completed')
-                return (
-                    'I could not finalize your request because the tool call budget '
-                    'was exceeded. Please try again.'
-                )
-
-            messages.append(
-                {
-                    'role': 'assistant',
-                    'content': message.content or '',
-                    'tool_calls': [
-                        {
-                            'id': getattr(tool_call, 'id', ''),
-                            'type': 'function',
-                            'function': {
-                                'name': self._tool_name(tool_call),
-                                'arguments': json.dumps(self._tool_arguments(tool_call)),
-                            },
-                        }
-                        for tool_call in tool_calls
-                    ],
-                }
-            )
-
-            for tool_call in tool_calls:
-                tool_name = self._tool_name(tool_call)
-                tool_result: object = {
-                    'error': f'Tool {tool_name} failed unexpectedly.',
-                    'tool_name': tool_name,
-                }
-                sandbox.register_call(tool_name)
-                if tool_name not in allowed_tools:
-                    tool_result = {
-                        'error': f'Tool {tool_name} is not allowed for this request context.',
-                    }
-                    obs_logger.warning(
-                        'ai.tool_not_allowed',
-                        reason_code='TOOL_NOT_ALLOWED',
-                        details={'tool_name': tool_name},
-                    )
-                elif sandbox.tool_is_rate_limited(tool_name):
-                    tool_result = {
-                        'error': f'Tool {tool_name} exceeded per-turn rate limit.',
-                    }
-                    obs_logger.warning(
-                        'ai.tool_rate_limited',
-                        reason_code='TOOL_RATE_LIMIT_EXCEEDED',
-                        details={'tool_name': tool_name},
-                    )
-                else:
-                    try:
-                        with TimingContext(f'ai.tool_execution_{tool_name}'):
-                            tool_result = await sync_to_async(
-                                self._execute_tool_call,
-                                thread_sensitive=True,
-                            )(tool_call)
-                        json.dumps(tool_result, default=str)
-                    except Exception as error:
-                        tool_result = {
-                            'error': str(error),
-                            'tool_name': tool_name,
-                        }
-                        obs_logger.error(
-                            'ai.tool_execution_failed',
-                            reason_code='TOOL_EXECUTION_ERROR',
-                            details={
-                                'tool_name': tool_name,
-                                'error_type': type(error).__name__,
-                                'error_message': str(error)[:200],
-                            },
-                        )
-                        await create_audit_event_async(AuditEventData(
-                            event_type='TOOL_FAILURE',
-                            severity='ERROR',
-                            resource_type='tool',
-                            resource_id=tool_name,
-                            action='execution_failed',
-                            reason_code='TOOL_EXECUTION_ERROR',
-                        ))
-
-                messages.append(
-                    {
-                        'role': 'tool',
-                        'tool_call_id': getattr(tool_call, 'id', ''),
-                        'content': json.dumps(tool_result, default=str),
-                    }
-                )
-
-            self._audit_logger.log_turn_event(
-                event='tool_round_completed',
-                prompt=prompt,
-                data={
-                    'model': self._model,
-                    'tool_names': [self._tool_name(tool_call) for tool_call in tool_calls],
-                },
-            )
-
-        logger.info('ai.generate_response.completed')
-        return (
-            'I could not finalize your request after multiple tool steps. '
-            'Please try again.'
+    def _get_allowed_tools(self) -> set[str]:
+        return self._policy_engine.allowed_tool_names(
+            user_id=self._user_id,
+            available_tool_names=TOOL_EXECUTOR_BY_NAME.keys(),
         )
+
+    def _build_tool_executor(self) -> ToolExecutor:
+        return ToolExecutor(
+            validator=self.validate_tool_arguments,
+            executor_registry=TOOL_EXECUTOR_BY_NAME,
+            user_id=self._user_id,
+        )
+
+    def _build_prompt_messages(
+        self,
+        prompt: str,
+        history: list[dict[str, str]] | None,
+    ) -> list[dict[str, object]]:
+        return self._planner.build_messages(
+            system_prompt=self._build_system_prompt(),
+            prompt=prompt,
+            history=history,
+        )
+
+    def _log_turn_completed(
+        self,
+        *,
+        prompt: str,
+        response: str,
+    ) -> None:
+        self._memory_manager.remember(
+            {'prompt': prompt, 'response': response, 'tool_calls': []}
+        )
+        self._audit_logger.log_turn_event(
+            event='turn_completed',
+            prompt=prompt,
+            data={'model': self._model, 'tool_calls': 0},
+        )
+
+    def _log_tool_round_completion(
+        self,
+        *,
+        prompt: str,
+        tool_names: list[str],
+    ) -> None:
+        self._audit_logger.log_turn_event(
+            event='tool_round_completed',
+            prompt=prompt,
+            data={
+                'model': self._model,
+                'tool_names': tool_names,
+            },
+        )
+
+    async def _execute_tool_round(
+        self,
+        *,
+        parsed_tool_calls: tuple[ParsedToolCall, ...],
+        messages: list[dict[str, object]],
+        allowed_tools: set[str],
+        sandbox: ToolExecutionSandbox,
+        emit_status: bool = False,
+    ) -> AsyncGenerator[tuple[str, object]]:
+        tool_executor = self._build_tool_executor()
+
+        for parsed_call in parsed_tool_calls:
+            if emit_status:
+                yield ('status', parsed_call.tool_name)
+
+            execution_result = await tool_executor.execute(
+                parsed_call,
+                allowed_tools=allowed_tools,
+                sandbox=sandbox,
+            )
+            messages.append(
+                build_tool_message(
+                    execution_result.parsed_call.tool_call_id,
+                    execution_result.payload,
+                )
+            )
+            yield ('result', execution_result)
+
 
     async def stream_response(
         self,
@@ -481,28 +319,13 @@ class OpenRouterAgent(BaseAgentInterface):
                 yield encode_finish()
                 return
 
-            messages = self._planner.build_messages(
-                system_prompt=self._build_system_prompt(),
-                prompt=prompt,
-                history=history,
-            )
-            allowed_tools = self._policy_engine.allowed_tool_names(
-                user_id=self._user_id,
-                available_tool_names=TOOL_EXECUTOR_BY_NAME.keys(),
-            )
-            sandbox = ToolExecutionSandbox(
-                max_tool_rounds=self._max_tool_rounds,
-                max_tool_calls=self._max_tool_calls,
-                timeout_budget_ms=self._timeout_budget_ms,
-                per_tool_limit=self.DEFAULT_PER_TOOL_LIMIT,
-            )
+            messages = self._build_prompt_messages(prompt, history)
+            allowed_tools = self._get_allowed_tools()
+            sandbox = self._build_sandbox()
 
             for _ in range(sandbox.max_tool_rounds):
                 if not sandbox.has_time_budget():
-                    yield encode_text_delta(
-                        'I could not finalize your request within the execution budget. '
-                        'Please try again.'
-                    )
+                    yield encode_text_delta(self.EXECUTION_BUDGET_EXCEEDED_RESPONSE)
                     yield encode_finish('timeout')
                     return
 
@@ -553,45 +376,28 @@ class OpenRouterAgent(BaseAgentInterface):
 
                 # -- No tool calls → done --
                 if not tool_calls_by_index:
-                    final_text = self._normalize_response_text(text_content)
+                    final_text = normalize_response_text(text_content)
                     if self.backend_catches_emergency_override(final_text):
                         yield encode_text_delta('<EMERGENCY_OVERRIDE>')
                     elif not text_content.strip():
                         # Nothing was streamed (empty response) — send normalized fallback
                         yield encode_text_delta(final_text)
 
-                    self._memory_manager.remember(
-                        {'prompt': prompt, 'response': text_content, 'tool_calls': []}
-                    )
-                    self._audit_logger.log_turn_event(
-                        event='turn_completed',
-                        prompt=prompt,
-                        data={'model': self._model, 'tool_calls': 0},
-                    )
+                    self._log_turn_completed(prompt=prompt, response=text_content)
                     yield encode_finish(finish_reason)
                     return
 
                 # -- Tool calls: execute each --
                 if not sandbox.can_accept_calls(len(tool_calls_by_index)):
-                    yield encode_text_delta(
-                        'I could not finalize your request because the tool call budget '
-                        'was exceeded. Please try again.'
-                    )
+                    yield encode_text_delta(self.TOOL_BUDGET_EXCEEDED_RESPONSE)
                     yield encode_finish('tool_budget_exceeded')
                     return
 
                 # Append assistant message with tool_calls to conversation
-                assistant_tool_calls = []
-                for idx in sorted(tool_calls_by_index):
-                    tc = tool_calls_by_index[idx]
-                    assistant_tool_calls.append({
-                        'id': tc['id'],
-                        'type': 'function',
-                        'function': {
-                            'name': tc['name'],
-                            'arguments': tc['arguments'],
-                        },
-                    })
+                parsed_tool_calls = tuple(
+                    ToolCallParser.parse_streamed(tool_calls_by_index)
+                )
+                assistant_tool_calls = build_assistant_tool_calls(parsed_tool_calls)
 
                 messages.append({
                     'role': 'assistant',
@@ -599,102 +405,36 @@ class OpenRouterAgent(BaseAgentInterface):
                     'tool_calls': assistant_tool_calls,
                 })
 
-                for tc_info in assistant_tool_calls:
-                    tool_name = tc_info['function']['name']
-                    tool_call_id = tc_info['id']
-                    sandbox.register_call(tool_name)
+                async for event_type, event_payload in self._execute_tool_round(
+                    parsed_tool_calls=parsed_tool_calls,
+                    messages=messages,
+                    allowed_tools=allowed_tools,
+                    sandbox=sandbox,
+                    emit_status=True,
+                ):
+                    if event_type == 'status':
+                        yield encode_status(f'Executing {event_payload}...')
+                        continue
 
-                    yield encode_status(f'Executing {tool_name}...')
-
-                    tool_result: object = {
-                        'error': f'Tool {tool_name} failed unexpectedly.',
-                        'tool_name': tool_name,
-                    }
-
-                    if tool_name not in allowed_tools:
-                        tool_result = {
-                            'error': f'Tool {tool_name} is not allowed for this request context.',
-                        }
-                        obs_logger.warning(
-                            'ai.tool_not_allowed',
-                            reason_code='TOOL_NOT_ALLOWED',
-                            details={'tool_name': tool_name},
-                        )
-                    elif sandbox.tool_is_rate_limited(tool_name):
-                        tool_result = {
-                            'error': f'Tool {tool_name} exceeded per-turn rate limit.',
-                        }
-                        obs_logger.warning(
-                            'ai.tool_rate_limited',
-                            reason_code='TOOL_RATE_LIMIT_EXCEEDED',
-                            details={'tool_name': tool_name},
-                        )
-                    else:
-                        try:
-                            arguments = json.loads(tc_info['function']['arguments'] or '{}')
-                            validated_args = self.validate_tool_arguments(tool_name, arguments)
-                            executor = TOOL_EXECUTOR_BY_NAME.get(tool_name)
-                            if executor is None:
-                                raise ValueError(f'Unsupported tool call: {tool_name}')
-                            with TimingContext(f'ai.tool_execution_{tool_name}'):
-                                tool_result = await sync_to_async(
-                                    executor,
-                                    thread_sensitive=True,
-                                )(validated_args, self._user_id)
-                            json.dumps(tool_result, default=str)
-                        except Exception as error:
-                            tool_result = {
-                                'error': str(error),
-                                'tool_name': tool_name,
-                            }
-                            obs_logger.error(
-                                'ai.tool_execution_failed',
-                                reason_code='TOOL_EXECUTION_ERROR',
-                                details={
-                                    'tool_name': tool_name,
-                                    'error_type': type(error).__name__,
-                                    'error_message': str(error)[:200],
-                                },
-                            )
-                            await create_audit_event_async(AuditEventData(
-                                event_type='TOOL_FAILURE',
-                                severity='ERROR',
-                                resource_type='tool',
-                                resource_id=tool_name,
-                                action='execution_failed',
-                                reason_code='TOOL_EXECUTION_ERROR',
-                            ))
-
-                    # Append tool result to messages for next round
-                    messages.append({
-                        'role': 'tool',
-                        'tool_call_id': tool_call_id,
-                        'content': json.dumps(tool_result, default=str),
-                    })
-
-                    # Emit structured UI event if tool is UI-mapped
-                    ui_kind = get_ui_kind(tool_name)
-                    if ui_kind and not (isinstance(tool_result, dict) and 'error' in tool_result):
+                    execution_result = cast(Any, event_payload)
+                    ui_kind = get_ui_kind(execution_result.parsed_call.tool_name)
+                    if ui_kind and not (
+                        isinstance(execution_result.payload, dict)
+                        and 'error' in execution_result.payload
+                    ):
                         yield encode_tool_result(
-                            tool_name=tool_name,
+                            tool_name=execution_result.parsed_call.tool_name,
                             ui_kind=ui_kind,
-                            result=tool_result,
+                            result=execution_result.payload,
                         )
 
-                self._audit_logger.log_turn_event(
-                    event='tool_round_completed',
+                self._log_tool_round_completion(
                     prompt=prompt,
-                    data={
-                        'model': self._model,
-                        'tool_names': [tc['function']['name'] for tc in assistant_tool_calls],
-                    },
+                    tool_names=[parsed_call.tool_name for parsed_call in parsed_tool_calls],
                 )
 
             # Exhausted all tool rounds
-            yield encode_text_delta(
-                'I could not finalize your request after multiple tool steps. '
-                'Please try again.'
-            )
+            yield encode_text_delta(self.MAX_TOOL_ROUNDS_EXCEEDED_RESPONSE)
             yield encode_finish('max_rounds')
 
         except APIStatusError as error:

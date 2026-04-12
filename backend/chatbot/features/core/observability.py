@@ -2,7 +2,7 @@
 Observability infrastructure for structured logging, correlation IDs, and tracing.
 
 This module provides:
-- Correlation ID context management (request ID, turn ID)
+- Correlation ID context management (request ID)
 - Structured logging with automatic context injection
 - Metrics collection hooks
 - Audit event creation helpers
@@ -27,9 +27,6 @@ User = get_user_model()
 _request_id_context: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     'request_id', default=None
 )
-_turn_id_context: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    'turn_id', default=None
-)
 _user_id_context: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     'user_id', default=None
 )
@@ -43,19 +40,9 @@ def generate_request_id() -> str:
     return f"req_{secrets.token_hex(12)}"
 
 
-def generate_turn_id() -> str:
-    """Generate a unique turn ID (correlation ID for single chat turn)."""
-    return f"turn_{secrets.token_hex(12)}"
-
-
 def set_request_id(request_id: str) -> None:
     """Set the request ID in context (typically from HTTP header)."""
     _request_id_context.set(request_id)
-
-
-def set_turn_id(turn_id: str) -> None:
-    """Set the turn ID in context (for chat interactions)."""
-    _turn_id_context.set(turn_id)
 
 
 def set_user_id(user_id: int | None) -> None:
@@ -68,11 +55,6 @@ def get_request_id() -> str | None:
     return _request_id_context.get()
 
 
-def get_turn_id() -> str | None:
-    """Get current turn ID from context."""
-    return _turn_id_context.get()
-
-
 def get_user_id() -> int | None:
     """Get current user ID from context."""
     return _user_id_context.get()
@@ -81,7 +63,6 @@ def get_user_id() -> int | None:
 def clear_context() -> None:
     """Clear all context variables (usually called at end of request)."""
     _request_id_context.set(None)
-    _turn_id_context.set(None)
     _user_id_context.set(None)
 
 
@@ -95,13 +76,10 @@ class StructuredLogger:
         """Build context dict with current correlation IDs."""
         ctx = {}
         request_id = get_request_id()
-        turn_id = get_turn_id()
         user_id = get_user_id()
         
         if request_id:
             ctx['request_id'] = request_id
-        if turn_id:
-            ctx['turn_id'] = turn_id
         if user_id:
             ctx['user_id'] = user_id
         
@@ -260,45 +238,11 @@ class MetricsCollector:
             self.metrics[operation] = []
         self.metrics[operation].append(('latency', latency_ms, timezone.now()))
 
-    def record_count(self, operation: str, count: int = 1) -> None:
-        """Record operation count."""
-        if operation not in self.metrics:
-            self.metrics[operation] = []
-        self.metrics[operation].append(('count', count, timezone.now()))
-
     def record_error(self, operation: str, error_type: str) -> None:
         """Record operation error."""
         if operation not in self.metrics:
             self.metrics[operation] = []
         self.metrics[operation].append(('error', error_type, timezone.now()))
-
-    def get_summary(self, operation: str) -> dict[str, Any]:
-        """Get summary stats for an operation."""
-        if operation not in self.metrics:
-            return {}
-        
-        data = self.metrics[operation]
-        latencies = [v[1] for v in data if v[0] == 'latency']
-        counts = [v[1] for v in data if v[0] == 'count']
-        errors = [v[1] for v in data if v[0] == 'error']
-        
-        summary = {}
-        if latencies:
-            summary['latency_ms'] = {
-                'min': min(latencies),
-                'max': max(latencies),
-                'avg': sum(latencies) / len(latencies),
-                'p95': sorted(latencies)[int(len(latencies) * 0.95)],
-            }
-        
-        if counts:
-            summary['total_count'] = sum(counts)
-        
-        if errors:
-            summary['error_count'] = len(errors)
-            summary['error_types'] = list(set(errors))
-        
-        return summary
 
 
 # Global metrics collector

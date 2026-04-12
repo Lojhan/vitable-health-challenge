@@ -35,7 +35,7 @@ const emit = defineEmits(['pick-slot', 'continue'])
 			v-for="slot in props.daySlots"
 			:key="slot.id"
 			type="button"
-			class="rounded-md border px-2.5 py-2 text-sm font-semibold transition cursor-pointer"
+			class="cursor-pointer rounded-md border px-2.5 py-2 text-sm font-semibold transition"
 			:class="props.selectedSlotId === slot.id
 				? 'border-indigo-500 bg-indigo-50 text-indigo-700'
 				: 'border-indigo-300 bg-white text-indigo-700 hover:border-indigo-500 hover:bg-indigo-50'"
@@ -46,11 +46,11 @@ const emit = defineEmits(['pick-slot', 'continue'])
 		</button>
 	</div>
 
-	<p v-else class="m-0 text-xs text-slate-500">No slots available for this day.</p>
+	<p v-else class="m-0 text-xs text-slate-500">No slots available for this selection.</p>
 
 	<button
 		type="button"
-		class="mt-3 w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+		class="mt-3 w-full cursor-pointer rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
 		:disabled="props.isLocked || !props.hasSelectedSlot"
 		@click="emit('continue')"
 	>

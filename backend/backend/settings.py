@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import getpass
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 from .runtime_config import load_runtime_settings

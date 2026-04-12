@@ -57,7 +57,7 @@ function dayCircleClasses(day) {
 				<button
 					v-else
 					type="button"
-					class="mx-auto grid h-11 w-11 place-items-center rounded-full text-sm font-medium transition cursor-pointer disabled:cursor-default"
+					class="mx-auto grid h-11 w-11 cursor-pointer place-items-center rounded-full text-sm font-medium transition disabled:cursor-default"
 					:class="dayCircleClasses(day)"
 					:disabled="props.isLocked || !day.is_available"
 					@click="emit('select-day', day.iso_day)"

@@ -23,12 +23,82 @@ class _FakeGateway:
             choices=[SimpleNamespace(message=SimpleNamespace(content='ok', tool_calls=[]))]
         )
 
+    async def create_streaming_chat_completion(self, *, model, messages, tools, max_tokens):
+        completion = await self.create_chat_completion(
+            model=model,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+        )
+        message = completion.choices[0].message
+        tool_calls = getattr(message, 'tool_calls', None) or []
+        if tool_calls:
+            for index, tool_call in enumerate(tool_calls):
+                yield SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[SimpleNamespace(
+                                index=index,
+                                id=getattr(tool_call, 'id', f'tool-{index}'),
+                                function=SimpleNamespace(
+                                    name=tool_call.function.name,
+                                    arguments='',
+                                ),
+                            )],
+                        ),
+                        finish_reason=None,
+                    )],
+                )
+                yield SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[SimpleNamespace(
+                                index=index,
+                                id=None,
+                                function=SimpleNamespace(
+                                    name=None,
+                                    arguments=tool_call.function.arguments,
+                                ),
+                            )],
+                        ),
+                        finish_reason=None,
+                    )],
+                )
+        else:
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content=message.content, tool_calls=None),
+                    finish_reason=None,
+                )],
+            )
+
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(content=None, tool_calls=None),
+                finish_reason='stop',
+            )],
+        )
+
+
+def _collect_text_response(agent: OpenRouterAgent, prompt: str) -> str:
+    async def _collect() -> str:
+        chunks = [chunk async for chunk in agent.stream_response(prompt)]
+        text_chunks: list[str] = []
+        for chunk in chunks:
+            if chunk.startswith('0:'):
+                text_chunks.append(json.loads(chunk[2:]))
+        return ''.join(text_chunks)
+
+    return asyncio.run(_collect())
+
 
 def test_agent_policy_short_circuits_emergency_without_provider_call():
     gateway = _FakeGateway(error=RuntimeError('should not be called'))
     agent = OpenRouterAgent(api_key='explicit-key', gateway=gateway)
 
-    result = asyncio.run(agent.generate_response('I have severe chest pain and difficulty breathing'))
+    result = _collect_text_response(agent, 'I have severe chest pain and difficulty breathing')
 
     assert result == '<EMERGENCY_OVERRIDE>'
     assert gateway.calls == 0
@@ -94,7 +164,7 @@ def test_agent_rejects_unauthenticated_protected_tool_call():
     gateway = _FakeGateway(responses=[first_response, second_response])
     agent = OpenRouterAgent(api_key='explicit-key', gateway=gateway)
 
-    result = asyncio.run(agent.generate_response('Book me a visit for tomorrow at 10'))
+    result = _collect_text_response(agent, 'Book me a visit for tomorrow at 10')
 
     assert result == 'Cannot proceed.'
     assert gateway.calls == 2

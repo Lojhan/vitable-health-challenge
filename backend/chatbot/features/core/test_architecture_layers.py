@@ -1,5 +1,6 @@
 import ast
 from pathlib import Path
+from typing import NamedTuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -10,6 +11,13 @@ def _py_files(glob_pattern: str) -> list[Path]:
 
 def _read(path: Path) -> str:
     return path.read_text(encoding='utf-8')
+
+
+class _FunctionSymbol(NamedTuple):
+    path: Path
+    qualname: str
+    name: str
+    is_private: bool
 
 
 def _imported_modules(path: Path) -> set[str]:
@@ -30,6 +38,62 @@ def _imported_modules(path: Path) -> set[str]:
 def _class_defs(path: Path) -> list[ast.ClassDef]:
     tree = ast.parse(_read(path))
     return [node for node in tree.body if isinstance(node, ast.ClassDef)]
+
+
+def _function_symbols(path: Path) -> list[_FunctionSymbol]:
+    tree = ast.parse(_read(path))
+    symbols: list[_FunctionSymbol] = []
+    parents: dict[int, ast.AST] = {}
+
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[id(child)] = parent
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name.startswith('__') and node.name.endswith('__'):
+            continue
+        if node.name in {'execute', '__enter__', '__exit__'}:
+            continue
+        if any(
+            isinstance(decorator, ast.Name) and decorator.id == 'abstractmethod'
+            for decorator in node.decorator_list
+        ):
+            continue
+
+        parent = parents.get(id(node))
+        if isinstance(parent, ast.ClassDef):
+            qualname = f'{parent.name}.{node.name}'
+        else:
+            qualname = node.name
+
+        symbols.append(
+            _FunctionSymbol(
+                path=path,
+                qualname=qualname,
+                name=node.name,
+                is_private=node.name.startswith('_'),
+            )
+        )
+
+    return symbols
+
+
+def _reference_count(symbol_name: str, files: list[Path]) -> int:
+    count = 0
+
+    for file_path in files:
+        tree = ast.parse(_read(file_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                if node.id == symbol_name:
+                    count += 1
+            elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+                if node.attr == symbol_name:
+                    count += 1
+
+    return count
 
 
 def _base_names(class_def: ast.ClassDef) -> set[str]:
@@ -512,6 +576,44 @@ def test_query_modules_live_only_in_infrastructure_layer():
             continue
         if '/infrastructure/' not in path_str:
             offenders.append(str(file_path.relative_to(PROJECT_ROOT)))
+
+    assert offenders == []
+
+
+def test_production_symbols_are_not_dead_or_test_only():
+    reference_files = [
+        path
+        for path in _py_files('chatbot/**/*.py')
+        if '/tests/' not in path.as_posix()
+        and '/migrations/' not in path.as_posix()
+        and not path.name.startswith('test_')
+    ]
+    symbol_files = [
+        path
+        for path in reference_files
+        if '/api/' not in path.as_posix()
+    ]
+    test_files = [
+        path
+        for path in _py_files('chatbot/**/*.py')
+        if path not in reference_files
+    ]
+    offenders: list[str] = []
+
+    for file_path in symbol_files:
+        for symbol in _function_symbols(file_path):
+            production_refs = _reference_count(symbol.name, reference_files)
+            test_refs = _reference_count(symbol.name, test_files)
+            relative_path = file_path.relative_to(PROJECT_ROOT)
+
+            if production_refs == 0 and test_refs > 0:
+                offenders.append(
+                    f'{relative_path}::{symbol.qualname} is only referenced from tests'
+                )
+            elif symbol.is_private and production_refs == 0 and test_refs == 0:
+                offenders.append(
+                    f'{relative_path}::{symbol.qualname} is dead private code'
+                )
 
     assert offenders == []
 

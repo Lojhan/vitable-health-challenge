@@ -37,6 +37,27 @@ class FutureAppointmentsPayload(TypedDict):
     summary: str
 
 
+class AvailabilityProviderPayload(TypedDict):
+    provider_id: int
+    name: str
+    specialty: str
+
+
+class AvailabilityPayload(TypedDict, total=False):
+    type: str
+    timezone: str
+    appointment_duration_minutes: int
+    appointment_duration_note: str
+    requested_window_start_utc: str
+    requested_window_end_utc: str
+    availability_source: str
+    provider: AvailabilityProviderPayload | None
+    availability_dtstart_utc: str | None
+    availability_rrule: str | None
+    blocked_slots_utc: list[str]
+    available_slots_utc: list[str]
+
+
 class CancelAppointmentResult(TypedDict):
     appointment_id: int
     cancelled: bool

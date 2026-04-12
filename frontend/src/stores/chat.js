@@ -7,6 +7,7 @@ import { useAuthStore } from '../features/auth/stores/auth'
 
 const FRONTEND_BURST_WINDOW_MS = 1000
 const FRONTEND_BURST_SEPARATOR_TOKEN = '<USER_MESSAGE_BURST_SEPARATOR>'
+const AUTH_REFRESH_FAILED_ERROR = 'AUTH_REFRESH_FAILED'
 const MERGED_IN_PREVIOUS_RESPONSE_TOKEN = '<MERGED_IN_PREVIOUS_RESPONSE>'
 let messageCounter = 0
 let conversationCounter = 0
@@ -505,6 +506,7 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       let receivedAtLeastOneChunk = false
+      let authRefreshFailed = false
 
       await fetchEventSource(`${getApiBaseUrl()}/api/chat`, {
         ...buildRequestOptions(),
@@ -513,11 +515,12 @@ export const useChatStore = defineStore('chat', () => {
           if (response.status === 401) {
             const refreshed = await authStore.refreshAccessToken()
             if (!refreshed) {
+              authRefreshFailed = true
               clearChat()
               authStore.logout()
               streamError.value = 'Your session expired. Please login again.'
               activeController.abort()
-              throw new Error('Unauthorized')
+              throw new Error(AUTH_REFRESH_FAILED_ERROR)
             }
             // Update token and retry
             const headers = new Headers(init.headers)
@@ -551,6 +554,11 @@ export const useChatStore = defineStore('chat', () => {
         }
       })
 
+      if (authRefreshFailed) {
+        resolveBurstItems(burstItems)
+        return
+      }
+
       if (!receivedAtLeastOneChunk && !messages.value.some((message) => message.role === 'assistant' && message.content)) {
         const textMessage = ensureAssistantMessage('text')
         textMessage.content =
@@ -559,7 +567,12 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       resolveBurstItems(burstItems)
-    } catch (_error) {
+    } catch (error) {
+      if (authRefreshFailed || (error instanceof Error && error.message === AUTH_REFRESH_FAILED_ERROR)) {
+        resolveBurstItems(burstItems)
+        return
+      }
+
       if (!messages.value.some((message) => message.role === 'assistant' && message.content)) {
         const textMessage = ensureAssistantMessage('text')
         textMessage.content = 'I could not generate a response. Please try again.'

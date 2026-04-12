@@ -207,7 +207,7 @@ describe('chat store', () => {
       },
       body: buildStreamingBody([
         'data: 0:"Here are your options:"\n\n',
-        'data: 9:{"tool_name":"list_providers","ui_kind":"providers","result":[{"provider_id":1,"name":"Dr. Lee","specialty":"General Practice"}]}\n\n',
+        'data: 9:{"tool_name":"show_providers_for_selection","ui_kind":"providers","result":[{"provider_id":1,"name":"Dr. Lee","specialty":"General Practice"}]}\n\n',
         'data: d:{"finish_reason":"stop"}\n\n',
       ]),
     })

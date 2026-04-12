@@ -10,7 +10,7 @@ from __future__ import annotations
 
 # tool_name → ui_kind (matches ChatMessage.MessageKind values)
 UI_TOOL_MAP: dict[str, str] = {
-    'list_providers': 'providers',
+    'show_providers_for_selection': 'providers',
     'check_availability': 'availability',
     'list_my_appointments': 'appointments',
 }

@@ -1,8 +1,8 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 
-import { safeText } from '../../lib/structuredPayload'
-import { useStructuredAvailability } from '../composables/useStructuredAvailability'
+import { safeText } from '../../../lib/structuredPayload'
+import { useStructuredAvailabilityState } from '../composables/useStructuredAvailabilityState'
 import StructuredAvailabilityCalendarGrid from './StructuredAvailabilityCalendarGrid.vue'
 import StructuredAvailabilityHeader from './StructuredAvailabilityHeader.vue'
 import StructuredAvailabilitySlotsList from './StructuredAvailabilitySlotsList.vue'
@@ -17,6 +17,7 @@ const props = defineProps({
 const emit = defineEmits(['quick-reply'])
 
 const {
+	totalSlots,
 	timezone,
 	monthTitle,
 	weekRows,
@@ -36,18 +37,15 @@ const {
 	selectDay,
 	selectSlot,
 	saveSlotSelection,
-} = useStructuredAvailability(props.payload)
+} = useStructuredAvailabilityState(props.payload)
 
-const totalSlots = computed(() => props.payload.data.total_slots ?? 0)
 const mobileStep = ref('date')
-
 const selectedSlot = computed(() => daySlots.value.find((slot) => slot.id === selectedSlotId.value) ?? null)
 const desktopMode = computed(() => !isMobile.value)
 const isMobileDateStep = computed(() => isMobile.value && mobileStep.value === 'date')
 const isMobileTimeStep = computed(() => isMobile.value && mobileStep.value === 'time')
 const showDateSelection = computed(() => !isMobile.value || isMobileDateStep.value)
 const showTimeSelection = computed(() => !isMobile.value || isMobileTimeStep.value)
-
 const weekDayHeaders = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 async function handleDaySelect(isoDay) {
@@ -127,7 +125,7 @@ watch(isMobile, (mobile) => {
 		</div>
 
 		<div class="p-2">
-			<div class="flex gap-4 items-center justify-center md:gap-6">
+			<div class="flex items-center justify-center gap-4 md:gap-6">
 				<div class="grid w-full max-w-120 gap-2">
 					<StructuredAvailabilityHeader
 						:is-mobile="isMobile"

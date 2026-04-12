@@ -109,25 +109,20 @@ export function useChatScreenController({ authStore, chatStore }) {
 				role: 'assistant',
 				content: JSON.stringify({
 					type: 'availability',
-					total_slots: 6,
 					timezone: 'UTC',
+					appointment_duration_minutes: 60,
 					appointment_duration_note: '*Appointments last 1h.',
-					grouped_human_utc: [
-						{
-							day_iso_utc: '2026-04-14',
-							day: 'Tuesday, April 14',
-							period: 'morning',
-							windows_utc: ['9:00 AM - 12:00 PM'],
-							slot_count: 3,
-						},
-						{
-							day_iso_utc: '2026-04-14',
-							day: 'Tuesday, April 14',
-							period: 'afternoon',
-							windows_utc: ['1:00 PM - 4:00 PM'],
-							slot_count: 3,
-						},
-					],
+					availability_source: 'provider_rrule',
+					requested_window_start_utc: '2026-04-14T09:00:00',
+					requested_window_end_utc: '2026-04-14T16:00:00',
+					provider: {
+						provider_id: 1,
+						name: 'Dr. Sarah Chen',
+						specialty: 'General Practice',
+					},
+					availability_dtstart_utc: '2026-04-14T09:00:00',
+					availability_rrule: 'FREQ=DAILY;BYHOUR=9,10,11,13,14,15;BYMINUTE=0;BYSECOND=0',
+					blocked_slots_utc: [],
 				}),
 			},
 			{

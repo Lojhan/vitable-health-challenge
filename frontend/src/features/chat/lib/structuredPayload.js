@@ -1,9 +1,22 @@
+import { buildAvailabilityQuickActions } from '../structured/availability/lib/availabilityModel'
+
 function isProvider(candidate) {
 	return candidate
 		&& typeof candidate === 'object'
 		&& 'provider_id' in candidate
 		&& 'name' in candidate
 		&& 'specialty' in candidate
+}
+
+function isAvailabilityPayload(candidate) {
+	return Boolean(
+		candidate
+		&& typeof candidate === 'object'
+		&& (
+			typeof candidate.availability_rrule === 'string'
+			|| Array.isArray(candidate.available_slots_utc)
+		),
+	)
 }
 
 function buildStableInteractionId(rawValue) {
@@ -45,9 +58,23 @@ function resolvePayloadKind(parsed, fallbackInteractionId) {
 
 	if (
 		normalizedType === 'availability'
-		&& Array.isArray(parsed.grouped_human_utc)
+		&& isAvailabilityPayload(parsed)
 	) {
 		return { kind: 'availability', data: parsed, interactionId }
+	}
+
+	if (
+		normalizedType === 'availability_day'
+		&& isAvailabilityPayload(parsed)
+	) {
+		return { kind: 'availability_day', data: parsed, interactionId }
+	}
+
+	if (
+		normalizedType === 'availability_slots'
+		&& isAvailabilityPayload(parsed)
+	) {
+		return { kind: 'availability_slots', data: parsed, interactionId }
 	}
 
 	if (
@@ -61,7 +88,7 @@ function resolvePayloadKind(parsed, fallbackInteractionId) {
 		return { kind: 'providers', data: parsed.providers, interactionId }
 	}
 
-	if (Array.isArray(parsed.grouped_human_utc) && typeof parsed.total_slots === 'number') {
+	if (isAvailabilityPayload(parsed)) {
 		return { kind: 'availability', data: parsed, interactionId }
 	}
 
@@ -121,6 +148,14 @@ export function buildStructuredLeadMessage(payloadKind) {
 		return 'Here are the next available time windows.'
 	}
 
+	if (payloadKind === 'availability_day') {
+		return 'Here is the requested day with its available slots.'
+	}
+
+	if (payloadKind === 'availability_slots') {
+		return 'Here are the slots that match your requested time window.'
+	}
+
 	if (payloadKind === 'appointments') {
 		return 'Here is a snapshot of your upcoming appointments.'
 	}
@@ -144,16 +179,12 @@ export function buildStructuredQuickActions(payload) {
 		}))
 	}
 
-	if (payload.kind === 'availability') {
-		const firstDay = payload.data.grouped_human_utc?.[0]
-		if (!firstDay) {
-			return []
-		}
-
-		return (firstDay.windows_utc || []).slice(0, 2).map((windowUtc) => ({
-			label: `Pick ${windowUtc}`,
-			prompt: `Please book the ${windowUtc} slot on ${firstDay.day}.`,
-		}))
+	if (
+		payload.kind === 'availability'
+		|| payload.kind === 'availability_day'
+		|| payload.kind === 'availability_slots'
+	) {
+		return buildAvailabilityQuickActions(payload.data)
 	}
 
 	if (payload.kind === 'appointments') {

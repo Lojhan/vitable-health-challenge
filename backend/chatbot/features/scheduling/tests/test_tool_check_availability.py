@@ -4,9 +4,21 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
+from chatbot.features.scheduling.application.use_cases.check_availability import (
+    CheckAvailabilityUseCase,
+)
+from chatbot.features.scheduling.infrastructure.unit_of_work.django_scheduling import (
+    DjangoSchedulingUnitOfWork,
+)
 from chatbot.features.scheduling.models import Appointment, Provider
 from chatbot.features.scheduling.tests.helpers import make_provider
-from chatbot.features.scheduling.tools import check_availability
+
+
+def check_availability(date_range_str: str, provider_id: int | None = None) -> list[str]:
+    return CheckAvailabilityUseCase(uow_factory=DjangoSchedulingUnitOfWork).execute(
+        date_range_str=date_range_str,
+        provider_id=provider_id,
+    )
 
 
 @pytest.mark.django_db

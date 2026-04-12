@@ -3,7 +3,6 @@ import json
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -14,6 +13,15 @@ from chatbot.features.scheduling.models import Appointment
 
 def _pk(instance: object) -> int:
     return cast(int, cast(Any, instance).pk)
+
+
+async def _collect_text_response(agent: OpenRouterAgent, prompt: str) -> str:
+    chunks = [chunk async for chunk in agent.stream_response(prompt)]
+    text_chunks: list[str] = []
+    for chunk in chunks:
+        if chunk.startswith('0:'):
+            text_chunks.append(json.loads(chunk[2:]))
+    return ''.join(text_chunks)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -113,23 +121,80 @@ def test_end_to_end_session_persistence_with_appointment_tools(monkeypatch):
         ]
     )
 
-    mocked_create = AsyncMock(
-        side_effect=[
-            first_response,
-            first_final_response,
-            second_response,
-            second_final_response,
-        ]
-    )
-    agent._client.chat.completions.create = mocked_create
+    class FakeGateway:
+        def __init__(self):
+            self.responses = [
+                first_response,
+                first_final_response,
+                second_response,
+                second_final_response,
+            ]
+
+        async def create_streaming_chat_completion(self, **kwargs):
+            _ = kwargs
+            response = self.responses.pop(0)
+            tool_calls = getattr(response.choices[0].message, 'tool_calls', None) or []
+            if tool_calls:
+                for index, tool_call in enumerate(tool_calls):
+                    yield SimpleNamespace(
+                        choices=[SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=None,
+                                tool_calls=[SimpleNamespace(
+                                    index=index,
+                                    id=getattr(tool_call, 'id', f'tool-{index}'),
+                                    function=SimpleNamespace(
+                                        name=tool_call.function.name,
+                                        arguments='',
+                                    ),
+                                )],
+                            ),
+                            finish_reason=None,
+                        )],
+                    )
+                    yield SimpleNamespace(
+                        choices=[SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=None,
+                                tool_calls=[SimpleNamespace(
+                                    index=index,
+                                    id=None,
+                                    function=SimpleNamespace(
+                                        name=None,
+                                        arguments=tool_call.function.arguments,
+                                    ),
+                                )],
+                            ),
+                            finish_reason=None,
+                        )],
+                    )
+            else:
+                yield SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=response.choices[0].message.content,
+                            tool_calls=None,
+                        ),
+                        finish_reason=None,
+                    )],
+                )
+
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content=None, tool_calls=None),
+                    finish_reason='stop',
+                )],
+            )
+
+    agent = OpenRouterAgent(model='openai/gpt-4o-mini', user_id=_pk(user), gateway=FakeGateway())
 
     async def run_turns():
         # Turn 1: List appointments
-        result1 = await agent.generate_response('What appointments do I have?')
+        result1 = await _collect_text_response(agent, 'What appointments do I have?')
         assert result1 == 'You have no appointments scheduled.'
 
         # Turn 2: Book appointment
-        result2 = await agent.generate_response('Schedule me for tomorrow at 10 AM.')
+        result2 = await _collect_text_response(agent, 'Schedule me for tomorrow at 10 AM.')
         assert result2 == 'Appointment booked for 2026-04-15 at 10:00 AM.'
 
     asyncio.run(run_turns())

@@ -12,12 +12,9 @@ from chatbot.features.core.observability import (
     clear_context,
     create_audit_event,
     generate_request_id,
-    generate_turn_id,
     get_request_id,
-    get_turn_id,
     get_user_id,
     set_request_id,
-    set_turn_id,
     set_user_id,
 )
 from chatbot.features.core.redaction import (
@@ -40,15 +37,6 @@ class TestCorrelationIDs(TestCase):
         assert rid2.startswith('req_')
         assert rid1 != rid2
     
-    def test_generate_turn_id(self):
-        """Turn IDs are unique and well-formed."""
-        tid1 = generate_turn_id()
-        tid2 = generate_turn_id()
-        
-        assert tid1.startswith('turn_')
-        assert tid2.startswith('turn_')
-        assert tid1 != tid2
-    
     def test_set_and_get_request_id(self):
         """Request ID context can be set and retrieved."""
         clear_context()
@@ -57,15 +45,6 @@ class TestCorrelationIDs(TestCase):
         rid = 'test-request-123'
         set_request_id(rid)
         assert get_request_id() == rid
-    
-    def test_set_and_get_turn_id(self):
-        """Turn ID context can be set and retrieved."""
-        clear_context()
-        assert get_turn_id() is None
-        
-        tid = 'test-turn-456'
-        set_turn_id(tid)
-        assert get_turn_id() == tid
     
     def test_set_and_get_user_id(self):
         """User ID context can be set and retrieved."""
@@ -79,17 +58,14 @@ class TestCorrelationIDs(TestCase):
     def test_clear_context(self):
         """Clear context removes all correlation IDs."""
         set_request_id('req-123')
-        set_turn_id('turn-456')
         set_user_id(789)
         
         assert get_request_id() is not None
-        assert get_turn_id() is not None
         assert get_user_id() is not None
         
         clear_context()
         
         assert get_request_id() is None
-        assert get_turn_id() is None
         assert get_user_id() is None
 
 
@@ -248,21 +224,11 @@ class TestMetricsCollector(TestCase):
         
         collector.record_latency('api.request', 150.5)
         collector.record_latency('api.request', 200.3)
-        
-        summary = collector.get_summary('api.request')
-        assert summary['latency_ms']['min'] == 150.5
-        assert summary['latency_ms']['max'] == 200.3
-        assert 150.5 <= summary['latency_ms']['avg'] <= 200.3
-    
-    def test_record_count(self):
-        """Counts can be recorded."""
-        collector = MetricsCollector()
-        
-        collector.record_count('database.queries', 5)
-        collector.record_count('database.queries', 3)
-        
-        summary = collector.get_summary('database.queries')
-        assert summary['total_count'] == 8
+        recorded = collector.metrics['api.request']
+        assert len(recorded) == 2
+        assert recorded[0][0] == 'latency'
+        assert recorded[0][1] == 150.5
+        assert recorded[1][1] == 200.3
     
     def test_record_error(self):
         """Errors can be recorded."""
@@ -270,10 +236,11 @@ class TestMetricsCollector(TestCase):
         
         collector.record_error('api.request', 'TimeoutError')
         collector.record_error('api.request', 'ConnectionError')
-        
-        summary = collector.get_summary('api.request')
-        assert summary['error_count'] == 2
-        assert 'TimeoutError' in summary['error_types']
+        recorded = collector.metrics['api.request']
+        assert len(recorded) == 2
+        assert recorded[0][0] == 'error'
+        assert recorded[0][1] == 'TimeoutError'
+        assert recorded[1][1] == 'ConnectionError'
 
 
 class TestTimingContext(TestCase):
@@ -283,13 +250,15 @@ class TestTimingContext(TestCase):
         """TimingContext records operation latency."""
         from chatbot.features.core.observability import metrics
         
-        _initial_count = len(metrics.metrics.get('test.operation', []))
+        initial_count = len(metrics.metrics.get('test.operation', []))
         
         with TimingContext('test.operation'):
             pass
-        
-        summary = metrics.get_summary('test.operation')
-        assert 'latency_ms' in summary
+
+        entries = metrics.metrics['test.operation']
+        assert len(entries) == initial_count + 1
+        assert entries[-1][0] == 'latency'
+        assert entries[-1][1] >= 0
     
     def test_timing_context_with_exception(self):
         """TimingContext records exceptions."""
@@ -300,8 +269,6 @@ class TestTimingContext(TestCase):
                 raise ValueError('Test error')
         except ValueError:
             pass
-        
-        summary = metrics.get_summary('test.error')
-        assert 'error_count' in summary
-        assert summary['error_count'] == 1
-        assert 'ValueError' in summary['error_types']
+
+        entries = metrics.metrics['test.error']
+        assert any(entry[0] == 'error' and entry[1] == 'ValueError' for entry in entries)
