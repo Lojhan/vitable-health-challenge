@@ -151,6 +151,23 @@ describe('ChatMessageFeed', () => {
 		expect(wrapper.get('.structured-section-stub').text()).toContain('providers|skeleton|Reviewing provider options')
 	})
 
+	it('renders the new conversation empty state and emits prompt quick replies', async () => {
+		const wrapper = mountFeed()
+
+		expect(wrapper.text()).toContain('New conversation')
+		expect(wrapper.text()).toContain('Suggested prompts')
+
+		const firstPromptButton = wrapper.findAll('button').find((candidate) => (
+			candidate.text().includes('sore throat and fever')
+		))
+		expect(firstPromptButton).toBeTruthy()
+		await firstPromptButton.trigger('click')
+
+		expect(wrapper.emitted('quick-reply')).toEqual([
+			['I have a sore throat and fever. What should I do?'],
+		])
+	})
+
 	it('does not render a pending skeleton for plain text streaming', () => {
 		const wrapper = mountFeed({
 			messages: [

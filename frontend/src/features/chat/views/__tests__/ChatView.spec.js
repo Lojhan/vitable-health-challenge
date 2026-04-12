@@ -15,11 +15,15 @@ const chatStore = reactive({
 	streamError: '',
 	conversationSummaries: [],
 	activeConversationId: null,
-	synchronizeHistoryOnStartup: vi.fn(async () => {}),
+	historyHasMore: false,
+	isSyncingHistory: false,
+	isLoadingMoreHistory: false,
+	initializeChatScreen: vi.fn(async () => {}),
+	loadConversationHistoryPage: vi.fn(async () => {}),
 	sendMessage: vi.fn(async () => {}),
 	startNewConversation: vi.fn(),
 	clearChat: vi.fn(),
-	selectConversation: vi.fn(),
+	selectConversation: vi.fn(async () => {}),
 	resetEmergencyState: vi.fn(),
 })
 
@@ -84,12 +88,24 @@ describe('ChatView', () => {
 		chatStore.streamError = ''
 		chatStore.conversationSummaries = []
 		chatStore.activeConversationId = null
-		chatStore.synchronizeHistoryOnStartup.mockClear()
+		chatStore.historyHasMore = false
+		chatStore.isSyncingHistory = false
+		chatStore.isLoadingMoreHistory = false
+		chatStore.initializeChatScreen.mockClear()
+		chatStore.loadConversationHistoryPage.mockClear()
 		chatStore.sendMessage.mockClear()
 		chatStore.startNewConversation.mockClear()
 		chatStore.clearChat.mockClear()
 		chatStore.selectConversation.mockClear()
 		chatStore.resetEmergencyState.mockClear()
+	})
+
+	it('initializes a fresh chat screen on mount when authenticated', async () => {
+		authStore.isAuthenticated = true
+		mount(ChatView)
+		await nextTick()
+
+		expect(chatStore.initializeChatScreen).toHaveBeenCalledTimes(1)
 	})
 
 	it('renders existing messages', () => {

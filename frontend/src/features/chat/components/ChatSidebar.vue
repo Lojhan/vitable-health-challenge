@@ -1,6 +1,8 @@
 <script setup>
 import Button from 'primevue/button'
 
+import ChatSidebarHistoryList from './ChatSidebarHistoryList.vue'
+
 defineProps({
 	sidebarOpen: {
 		type: Boolean,
@@ -14,13 +16,25 @@ defineProps({
 		type: String,
 		default: null,
 	},
+	historyHasMore: {
+		type: Boolean,
+		default: false,
+	},
+	isLoadingHistory: {
+		type: Boolean,
+		default: false,
+	},
+	isLoadingMoreHistory: {
+		type: Boolean,
+		default: false,
+	},
 	formatConversationDate: {
 		type: Function,
 		required: true,
 	},
 })
 
-const emit = defineEmits(['close', 'new-conversation', 'select-conversation'])
+const emit = defineEmits(['close', 'new-conversation', 'request-more', 'select-conversation'])
 </script>
 
 <template>
@@ -56,28 +70,15 @@ const emit = defineEmits(['close', 'new-conversation', 'select-conversation'])
 			/>
 		</div>
 
-		<nav class="flex-1 overflow-y-auto px-2 py-2" aria-label="Past conversations">
-			<button
-				v-for="conversation in conversationSummaries"
-				:key="conversation.id"
-				type="button"
-				class="mb-1 w-full rounded-md border px-3 py-2 text-left transition"
-				:class="[
-					conversation.id === activeConversationId
-						? 'border-indigo-300 bg-indigo-50 text-indigo-900'
-						: 'border-transparent bg-transparent text-slate-700 hover:border-slate-200 hover:bg-slate-100',
-				]"
-				:aria-current="conversation.id === activeConversationId ? 'page' : undefined"
-				:aria-label="`Open conversation: ${conversation.title}`"
-				@click="emit('select-conversation', conversation.id)"
-			>
-				<p class="m-0 truncate text-sm font-medium">{{ conversation.title }}</p>
-				<p class="m-0 mt-0.5 text-xs text-slate-500">{{ formatConversationDate(conversation.updatedAt) }}</p>
-			</button>
-
-			<p v-if="conversationSummaries.length === 0" class="m-0 px-2 pt-3 text-sm text-slate-500">
-				Your past conversations will appear here.
-			</p>
-		</nav>
+		<ChatSidebarHistoryList
+			:conversation-summaries="conversationSummaries"
+			:active-conversation-id="activeConversationId"
+			:history-has-more="historyHasMore"
+			:is-loading-history="isLoadingHistory"
+			:is-loading-more-history="isLoadingMoreHistory"
+			:format-conversation-date="formatConversationDate"
+			@request-more="emit('request-more')"
+			@select-conversation="emit('select-conversation', $event)"
+		/>
 	</aside>
 </template>

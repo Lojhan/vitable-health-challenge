@@ -6,6 +6,12 @@ def _model_pk(instance: object) -> int:
 
 
 def _build_session_title(session: Any) -> str:
+    annotated_title = getattr(session, 'summary_title', None)
+    if isinstance(annotated_title, str) and annotated_title.strip():
+        normalized_title = ' '.join(annotated_title.split())
+        if normalized_title:
+            return normalized_title[:42]
+
     prefetched_messages = getattr(session, '_prefetched_objects_cache', {}).get('messages')
     if prefetched_messages is not None:
         first_user_message = next(
@@ -30,6 +36,15 @@ def _build_session_title(session: Any) -> str:
         return 'New conversation'
 
     return normalized[:42]
+
+
+def _serialize_chat_session_summary(session: Any) -> dict[str, object]:
+    return {
+        'id': _model_pk(session),
+        'title': _build_session_title(session),
+        'created_at': session.created_at.isoformat(),
+        'updated_at': session.updated_at.isoformat(),
+    }
 
 
 def _serialize_chat_session(session: Any) -> dict[str, object]:

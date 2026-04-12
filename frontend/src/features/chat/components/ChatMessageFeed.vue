@@ -6,6 +6,7 @@ import {
   buildStructuredLeadMessage,
   normalizeStructuredPayload,
 } from "../lib/structuredPayload";
+import ChatEmptyState from "./ChatEmptyState.vue";
 import ChatMessageBubble from "./ChatMessageBubble.vue";
 import ChatStreamActivityList from "./ChatStreamActivityList.vue";
 import ChatStructuredSection from "./ChatStructuredSection.vue";
@@ -277,6 +278,15 @@ const { handleFeedScroll } = useChatFeedAutoFollow({
   feedVersion,
 });
 
+const shouldShowEmptyState = computed(
+  () => (
+    props.messages.length === 0
+    && !props.isStreaming
+    && props.streamActivities.length === 0
+    && !props.streamError
+  ),
+);
+
 function handleQuickReply(prompt) {
   emit("quick-reply", prompt);
 }
@@ -294,7 +304,15 @@ function handleQuickReply(prompt) {
     class="flex-1 overflow-y-auto px-3 py-4 sm:px-4 vertical-scroll-strip"
     @scroll="handleFeedScroll"
   >
+    <div
+      v-if="shouldShowEmptyState"
+      class="mx-auto grid min-h-full w-full max-w-5xl content-center py-6 sm:py-10"
+    >
+      <ChatEmptyState @quick-reply="handleQuickReply" />
+    </div>
+
     <TransitionGroup
+      v-else
       tag="div"
       name="feed-entry"
       class="mx-auto grid w-full max-w-5xl content-start gap-2.5"

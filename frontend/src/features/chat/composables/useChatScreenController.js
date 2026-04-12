@@ -17,6 +17,9 @@ export function useChatScreenController({ authStore, chatStore }) {
 
 	const conversationSummaries = computed(() => chatStore.conversationSummaries)
 	const activeConversationId = computed(() => chatStore.activeConversationId)
+	const historyHasMore = computed(() => chatStore.historyHasMore)
+	const isLoadingHistory = computed(() => chatStore.isSyncingHistory)
+	const isLoadingMoreHistory = computed(() => chatStore.isLoadingMoreHistory)
 
 	watch(
 		() => chatStore.emergencyOverride,
@@ -80,9 +83,13 @@ export function useChatScreenController({ authStore, chatStore }) {
 		headerMenuOpen.value = false
 	}
 
-	function handleSelectConversation(conversationId) {
-		chatStore.selectConversation(conversationId)
+	async function handleSelectConversation(conversationId) {
+		await chatStore.selectConversation(conversationId)
 		closeSidebar()
+	}
+
+	function handleLoadMoreHistory() {
+		void chatStore.loadConversationHistoryPage()
 	}
 
 	function formatConversationDate(value) {
@@ -120,7 +127,7 @@ export function useChatScreenController({ authStore, chatStore }) {
 		window.addEventListener('keydown', onGlobalKeyDown)
 
 		if (authStore.isAuthenticated) {
-			void chatStore.synchronizeHistoryOnStartup({ force: true })
+			void chatStore.initializeChatScreen()
 		}
 	})
 
@@ -138,6 +145,9 @@ export function useChatScreenController({ authStore, chatStore }) {
 		messageInputId,
 		conversationSummaries,
 		activeConversationId,
+		historyHasMore,
+		isLoadingHistory,
+		isLoadingMoreHistory,
 		submitMessage,
 		handleStructuredQuickReply,
 		resetAlert,
@@ -146,6 +156,7 @@ export function useChatScreenController({ authStore, chatStore }) {
 		toggleHeaderMenu,
 		handleNewConversation,
 		handleClearChat,
+		handleLoadMoreHistory,
 		handleSelectConversation,
 		formatConversationDate,
 	}

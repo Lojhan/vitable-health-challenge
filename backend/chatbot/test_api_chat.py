@@ -15,6 +15,7 @@ from chatbot.features.chat.application.use_cases.prepare_chat_turn import Prepar
 from chatbot.features.chat.composition import (
     build_get_chat_history_sync_use_case,
     build_get_chat_history_use_case,
+    build_get_chat_session_use_case,
 )
 from chatbot.features.chat.message_burst import FRONTEND_BURST_SEPARATOR_TOKEN
 from chatbot.features.chat.models import ChatMessage, ChatSession, StructuredInteraction
@@ -598,18 +599,28 @@ def test_get_chat_history_and_sync_authenticated(client):
     assert len(payload['sessions']) == 1
     assert payload['sessions'][0]['id'] == _pk(session)
     assert payload['sessions'][0]['title'] == 'severe headache'
-    assert payload['sessions'][0]['messages'] == [
+    assert payload['sessions'][0]['created_at'] is not None
+    assert payload['sessions'][0]['updated_at'] is not None
+    assert payload['next_cursor'] is None
+    assert payload['has_more'] is False
+
+    detail_response = client.get(
+        f'/api/chat/sessions/{_pk(session)}',
+        HTTP_AUTHORIZATION=f'Bearer {access}',
+    )
+    assert detail_response.status_code == 200
+    assert detail_response.json()['messages'] == [
         {
             'role': 'user',
             'message_kind': 'text',
             'content': 'severe headache',
-            'created_at': payload['sessions'][0]['messages'][0]['created_at'],
+            'created_at': detail_response.json()['messages'][0]['created_at'],
         },
         {
             'role': 'assistant',
             'message_kind': 'text',
             'content': 'please hydrate',
-            'created_at': payload['sessions'][0]['messages'][1]['created_at'],
+            'created_at': detail_response.json()['messages'][1]['created_at'],
         },
     ]
 
@@ -688,9 +699,83 @@ def test_get_chat_history_use_case_serializes_user_sessions_in_desc_order():
 
     payload = build_get_chat_history_use_case(
         serialize_session=lambda session: {'id': _pk(session)},
-    ).execute(user_id=_pk(user))
+    ).execute(user_id=_pk(user), cursor=None, page_size=10)
 
     assert payload['sessions'] == [{'id': _pk(second)}, {'id': _pk(first)}]
+    assert payload['next_cursor'] is None
+    assert payload['has_more'] is False
+
+
+@pytest.mark.django_db
+def test_get_chat_history_paginates_summaries_with_cursor(client):
+    user_model = get_user_model()
+    user = user_model.objects.create_user(
+        username='history-page-user',
+        password='safe-password-123',
+        first_name='Page',
+        insurance_tier='Silver',
+        medical_history={},
+    )
+    oldest = ChatSession.objects.create(user=user)
+    middle = ChatSession.objects.create(user=user)
+    newest = ChatSession.objects.create(user=user)
+    ChatMessage.objects.create(session=oldest, role='user', content='oldest')
+    ChatMessage.objects.create(session=middle, role='user', content='middle')
+    ChatMessage.objects.create(session=newest, role='user', content='newest')
+
+    token_response = client.post(
+        '/api/auth/token',
+        data={'username': 'history-page-user', 'password': 'safe-password-123'},
+        content_type='application/json',
+    )
+    access = token_response.json()['access']
+
+    first_page = client.get(
+        '/api/chat/history?page_size=2',
+        HTTP_AUTHORIZATION=f'Bearer {access}',
+    )
+    assert first_page.status_code == 200
+    first_payload = first_page.json()
+    assert [session['id'] for session in first_payload['sessions']] == [_pk(newest), _pk(middle)]
+    assert first_payload['has_more'] is True
+    assert first_payload['next_cursor'] is not None
+
+    second_page = client.get(
+        f"/api/chat/history?page_size=2&cursor={first_payload['next_cursor']}",
+        HTTP_AUTHORIZATION=f'Bearer {access}',
+    )
+    assert second_page.status_code == 200
+    second_payload = second_page.json()
+    assert [session['id'] for session in second_payload['sessions']] == [_pk(oldest)]
+    assert second_payload['has_more'] is False
+    assert second_payload['next_cursor'] is None
+
+
+@pytest.mark.django_db
+def test_get_chat_session_use_case_returns_none_for_non_owner():
+    user_model = get_user_model()
+    owner = user_model.objects.create_user(
+        username='detail-owner',
+        password='safe-password-123',
+        first_name='Owner',
+        insurance_tier='Silver',
+        medical_history={},
+    )
+    outsider = user_model.objects.create_user(
+        username='detail-outsider',
+        password='safe-password-123',
+        first_name='Outsider',
+        insurance_tier='Bronze',
+        medical_history={},
+    )
+    session = ChatSession.objects.create(user=owner)
+    ChatMessage.objects.create(session=session, role='user', content='private note')
+
+    payload = build_get_chat_session_use_case(
+        serialize_session=_serialize_chat_session,
+    ).execute(user_id=_pk(outsider), session_id=_pk(session))
+
+    assert payload is None
 
 
 @pytest.mark.django_db

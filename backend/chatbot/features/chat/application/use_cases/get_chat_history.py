@@ -16,6 +16,20 @@ class GetChatHistoryUseCase(BaseUseCase):
         self._uow = uow
         self._serialize_session = serialize_session
 
-    def execute(self, *, user_id: int) -> dict[str, object]:
-        sessions = self._uow.list_user_sessions_prefetched(user_id=user_id)
-        return {'sessions': [self._serialize_session(session) for session in sessions]}
+    def execute(
+        self,
+        *,
+        user_id: int,
+        cursor: str | None,
+        page_size: int,
+    ) -> dict[str, object]:
+        sessions, next_cursor, has_more = self._uow.list_user_session_summaries_page(
+            user_id=user_id,
+            cursor=cursor,
+            page_size=page_size,
+        )
+        return {
+            'sessions': [self._serialize_session(session) for session in sessions],
+            'next_cursor': next_cursor,
+            'has_more': has_more,
+        }

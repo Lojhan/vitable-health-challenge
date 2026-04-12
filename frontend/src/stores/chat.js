@@ -6,6 +6,7 @@ import { apiClient, getApiBaseUrl } from '../lib/apiClient'
 import { useAuthStore } from '../features/auth/stores/auth'
 
 const FRONTEND_BURST_WINDOW_MS = 1000
+const HISTORY_PAGE_SIZE = 20
 const FRONTEND_BURST_SEPARATOR_TOKEN = '<USER_MESSAGE_BURST_SEPARATOR>'
 const AUTH_REFRESH_FAILED_ERROR = 'AUTH_REFRESH_FAILED'
 const MERGED_IN_PREVIOUS_RESPONSE_TOKEN = '<MERGED_IN_PREVIOUS_RESPONSE>'
@@ -50,6 +51,10 @@ function buildConversationTitle(prompt) {
     return 'New conversation'
   }
   return normalized.slice(0, 42)
+}
+
+function compareConversationsByUpdatedAt(left, right) {
+  return new Date(right.updatedAt) - new Date(left.updatedAt)
 }
 
 function buildMockIsoTimestamp(offsetMs = 0) {
@@ -268,56 +273,99 @@ export const useChatStore = defineStore('chat', () => {
   const activeStreamCount = ref(0)
   const isStreaming = computed(() => activeStreamCount.value > 0)
   const isSyncingHistory = ref(false)
+  const isLoadingMoreHistory = ref(false)
   const emergencyOverride = ref(false)
   const streamError = ref('')
   const sessionId = ref(null)
   const streamActivities = ref([])
+  const historySummaries = ref([])
+  const historyNextCursor = ref(null)
+  const historyHasMore = ref(true)
   const authStore = useAuthStore()
 
   const pendingPromptBurst = ref([])
   let promptBurstTimerId = null
   let isSendingPromptBurst = false
 
-  const conversationSummaries = computed(() => (
-    conversations.value
-      .map((conversation) => ({
-        id: conversation.id,
-        title: conversation.title,
-        createdAt: conversation.createdAt,
-        updatedAt: conversation.updatedAt,
-      }))
-      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
-  ))
+  function buildConversationSummary(conversation) {
+    return {
+      id: conversation.id,
+      title: conversation.title,
+      createdAt: conversation.createdAt,
+      updatedAt: conversation.updatedAt,
+      sessionId: conversation.sessionId ?? null,
+      isDraft: conversation.sessionId == null,
+    }
+  }
 
-  function computeLocalSyncToken() {
-    const latestUpdatedAt = conversations.value.reduce((latest, conversation) => {
-      if (!latest) {
-        return conversation.updatedAt
+  function normalizeServerSummary(session) {
+    return {
+      id: buildSessionConversationId(session.id),
+      title: session.title,
+      createdAt: session.created_at,
+      updatedAt: session.updated_at,
+      sessionId: session.id,
+      isDraft: false,
+    }
+  }
+
+  function normalizeConversationMessages(serverMessages) {
+    return serverMessages.flatMap((message) => {
+      const messageKind = message.message_kind ?? 'text'
+      if (
+        message.role === 'assistant'
+        && messageKind === 'text'
+        && typeof message.content === 'string'
+        && message.content.includes('\n\n')
+      ) {
+        return message.content.split('\n\n').map((part) => ({
+          id: buildMessageId(),
+          role: message.role,
+          messageKind,
+          content: part,
+        }))
       }
-      return new Date(conversation.updatedAt) > new Date(latest)
-        ? conversation.updatedAt
-        : latest
-    }, null)
 
-    const messageCount = conversations.value.reduce(
-      (total, conversation) => total + (conversation.messages?.length ?? 0),
-      0,
-    )
-
-    return [
-      latestUpdatedAt ?? 'none',
-      String(conversations.value.length),
-      String(messageCount),
-    ].join(':')
+      return [{
+        id: buildMessageId(),
+        role: message.role,
+        messageKind,
+        content: message.content,
+      }]
+    })
   }
 
-  function buildServerSyncToken(payload) {
-    return [
-      payload.latest_updated_at ?? 'none',
-      String(payload.session_count ?? 0),
-      String(payload.message_count ?? 0),
-    ].join(':')
+  function normalizeServerConversation(session) {
+    return {
+      id: buildSessionConversationId(session.id),
+      title: session.title,
+      createdAt: session.created_at,
+      updatedAt: session.updated_at,
+      sessionId: session.id,
+      messages: normalizeConversationMessages(session.messages ?? []),
+    }
   }
+
+  const conversationSummaries = computed(() => (
+    (() => {
+      const loadedSessionIds = new Set()
+      const combined = conversations.value.map((conversation) => {
+        if (conversation.sessionId != null) {
+          loadedSessionIds.add(conversation.sessionId)
+        }
+        return buildConversationSummary(conversation)
+      })
+
+      historySummaries.value.forEach((summary) => {
+        if (summary.sessionId != null && loadedSessionIds.has(summary.sessionId)) {
+          return
+        }
+        combined.push(summary)
+      })
+
+      return combined.sort(compareConversationsByUpdatedAt)
+    })()
+  ))
 
   function setCurrentConversationById(nextConversationId) {
     const selectedConversation = conversations.value.find(
@@ -333,6 +381,198 @@ export const useChatStore = defineStore('chat', () => {
     sessionId.value = selectedConversation.sessionId ?? null
   }
 
+  function clearActiveConversationSelection() {
+    activeConversationId.value = null
+    messages.value = []
+    sessionId.value = null
+  }
+
+  function setNewestLoadedConversationAsActive() {
+    if (conversations.value.length === 0) {
+      clearActiveConversationSelection()
+      return
+    }
+
+    const latestConversation = [...conversations.value].sort(compareConversationsByUpdatedAt)[0]
+    setCurrentConversationById(latestConversation.id)
+  }
+
+  function findReusableDraftConversation() {
+    return conversations.value.find(
+      (conversation) => conversation.sessionId == null && conversation.messages.length === 0,
+    ) ?? null
+  }
+
+  function ensureDraftConversationActive() {
+    const reusableDraftConversation = findReusableDraftConversation()
+    if (reusableDraftConversation) {
+      setCurrentConversationById(reusableDraftConversation.id)
+      return reusableDraftConversation
+    }
+
+    return startNewConversation()
+  }
+
+  function upsertHistorySummary(summary) {
+    if (summary.sessionId == null) {
+      return
+    }
+
+    const existingIndex = historySummaries.value.findIndex(
+      (candidate) => candidate.sessionId === summary.sessionId,
+    )
+
+    if (existingIndex >= 0) {
+      historySummaries.value[existingIndex] = {
+        ...historySummaries.value[existingIndex],
+        ...summary,
+      }
+      return
+    }
+
+    historySummaries.value.unshift(summary)
+  }
+
+  function removeHistorySummary(sessionIdentifier) {
+    historySummaries.value = historySummaries.value.filter(
+      (summary) => summary.sessionId !== sessionIdentifier,
+    )
+  }
+
+  function mergeHistorySummaries(nextSummaries, { reset = false } = {}) {
+    const merged = reset ? [] : [...historySummaries.value]
+
+    nextSummaries.forEach((summary) => {
+      const existingIndex = merged.findIndex(
+        (candidate) => candidate.sessionId === summary.sessionId,
+      )
+      if (existingIndex >= 0) {
+        merged[existingIndex] = {
+          ...merged[existingIndex],
+          ...summary,
+        }
+        return
+      }
+      merged.push(summary)
+    })
+
+    historySummaries.value = merged
+  }
+
+  function syncConversationSummary(conversation) {
+    upsertHistorySummary(buildConversationSummary(conversation))
+  }
+
+  function hydrateConversationFromServer(session) {
+    const normalizedConversation = normalizeServerConversation(session)
+    const existingConversation = conversations.value.find(
+      (conversation) => conversation.sessionId === normalizedConversation.sessionId,
+    )
+
+    if (existingConversation) {
+      existingConversation.title = normalizedConversation.title
+      existingConversation.createdAt = normalizedConversation.createdAt
+      existingConversation.updatedAt = normalizedConversation.updatedAt
+      existingConversation.messages = normalizedConversation.messages
+      if (existingConversation.id === activeConversationId.value) {
+        messages.value = existingConversation.messages
+        sessionId.value = existingConversation.sessionId
+      }
+      syncConversationSummary(existingConversation)
+      return existingConversation
+    }
+
+    conversations.value.unshift(normalizedConversation)
+    syncConversationSummary(normalizedConversation)
+    return normalizedConversation
+  }
+
+  function resetHistoryState() {
+    historySummaries.value = []
+    historyNextCursor.value = null
+    historyHasMore.value = true
+  }
+
+  async function loadConversationHistoryPage({ reset = false } = {}) {
+    if (!authStore.token) {
+      return
+    }
+
+    if (reset) {
+      isSyncingHistory.value = true
+      resetHistoryState()
+    } else {
+      if (isLoadingMoreHistory.value || !historyHasMore.value) {
+        return
+      }
+      isLoadingMoreHistory.value = true
+    }
+
+    try {
+      const response = await fetchWithAuthRecovery(() => apiClient.get('/api/chat/history', {
+        params: {
+          page_size: HISTORY_PAGE_SIZE,
+          ...(reset ? {} : { cursor: historyNextCursor.value }),
+        },
+      }))
+
+      const serverSessions = Array.isArray(response.data?.sessions)
+        ? response.data.sessions.map(normalizeServerSummary)
+        : []
+
+      mergeHistorySummaries(serverSessions, { reset })
+      historyNextCursor.value = response.data?.next_cursor ?? null
+      historyHasMore.value = Boolean(response.data?.has_more)
+    } catch (_error) {
+      streamError.value = 'Unable to load conversation history from the server.'
+    } finally {
+      if (reset) {
+        isSyncingHistory.value = false
+      } else {
+        isLoadingMoreHistory.value = false
+      }
+    }
+  }
+
+  async function initializeChatScreen() {
+    if (!authStore.token) {
+      return
+    }
+
+    streamError.value = ''
+    emergencyOverride.value = false
+    ensureDraftConversationActive()
+    await loadConversationHistoryPage({ reset: true })
+  }
+
+  async function openPersistedConversation(nextSessionId) {
+    const loadedConversation = conversations.value.find(
+      (conversation) => conversation.sessionId === nextSessionId,
+    )
+    if (loadedConversation) {
+      setCurrentConversationById(loadedConversation.id)
+      streamError.value = ''
+      emergencyOverride.value = false
+      clearStreamActivities()
+      return loadedConversation
+    }
+
+    const response = await fetchWithAuthRecovery(
+      () => apiClient.get(`/api/chat/sessions/${nextSessionId}`),
+    )
+    const serverSession = response.data
+    if (!serverSession || typeof serverSession !== 'object') {
+      throw new Error('Conversation detail payload missing.')
+    }
+
+    const hydratedConversation = hydrateConversationFromServer(serverSession)
+    setCurrentConversationById(hydratedConversation.id)
+    streamError.value = ''
+    emergencyOverride.value = false
+    clearStreamActivities()
+    return hydratedConversation
+  }
+
   function setLatestConversationAsActive() {
     if (conversations.value.length === 0) {
       activeConversationId.value = null
@@ -341,50 +581,7 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
-    const latestConversation = [...conversations.value].sort(
-      (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt),
-    )[0]
-
-    setCurrentConversationById(latestConversation.id)
-  }
-
-  function applyServerHistory(serverSessions) {
-    const previousActiveConversationId = activeConversationId.value
-
-    conversations.value = serverSessions.map((session) => ({
-      id: buildSessionConversationId(session.id),
-      title: session.title,
-      createdAt: session.created_at,
-      updatedAt: session.updated_at,
-      sessionId: session.id,
-      messages: session.messages.flatMap((message) => {
-        const messageKind = message.message_kind ?? 'text'
-        if (message.role === 'assistant' && messageKind === 'text' && typeof message.content === 'string' && message.content.includes('\n\n')) {
-          return message.content.split('\n\n').map((part) => ({
-            id: buildMessageId(),
-            role: message.role,
-            messageKind,
-            content: part,
-          }))
-        }
-        return [{
-          id: buildMessageId(),
-          role: message.role,
-          messageKind,
-          content: message.content,
-        }]
-      }),
-    }))
-
-    if (
-      previousActiveConversationId
-      && conversations.value.some((conversation) => conversation.id === previousActiveConversationId)
-    ) {
-      setCurrentConversationById(previousActiveConversationId)
-      return
-    }
-
-    setLatestConversationAsActive()
+    setNewestLoadedConversationAsActive()
   }
 
   function updateActiveConversationMeta(nextTitle) {
@@ -400,6 +597,9 @@ export const useChatStore = defineStore('chat', () => {
     activeConversation.updatedAt = new Date().toISOString()
     activeConversation.messages = messages.value
     activeConversation.sessionId = sessionId.value
+    if (activeConversation.sessionId != null) {
+      syncConversationSummary(activeConversation)
+    }
   }
 
   function syncSessionIdToActiveConversation(nextSessionId) {
@@ -428,6 +628,7 @@ export const useChatStore = defineStore('chat', () => {
     activeConversation.sessionId = nextSessionId
     activeConversation.updatedAt = new Date().toISOString()
     activeConversationId.value = permanentId
+    syncConversationSummary(activeConversation)
   }
 
   async function fetchWithAuthRecovery(requestFn) {
@@ -444,33 +645,6 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       return requestFn()
-    }
-  }
-
-  async function synchronizeHistoryOnStartup({ force = false } = {}) {
-    if (!authStore.token) {
-      return
-    }
-
-    isSyncingHistory.value = true
-
-    try {
-      const syncResponse = await fetchWithAuthRecovery(() => apiClient.get('/api/chat/history-sync'))
-      const serverToken = buildServerSyncToken(syncResponse.data)
-      const localToken = computeLocalSyncToken()
-
-      if (force || serverToken !== localToken) {
-        const historyResponse = await fetchWithAuthRecovery(() => apiClient.get('/api/chat/history'))
-        const serverSessions = historyResponse.data?.sessions
-
-        if (Array.isArray(serverSessions)) {
-          applyServerHistory(serverSessions)
-        }
-      }
-    } catch (_error) {
-      streamError.value = 'Unable to sync chat history from the server.'
-    } finally {
-      isSyncingHistory.value = false
     }
   }
 
@@ -492,23 +666,36 @@ export const useChatStore = defineStore('chat', () => {
     streamError.value = ''
     emergencyOverride.value = false
 	clearStreamActivities()
+    return conversation
   }
 
-  function selectConversation(conversationId) {
+  async function selectConversation(conversationId) {
     const selectedConversation = conversations.value.find(
       (conversation) => conversation.id === conversationId,
     )
 
-    if (!selectedConversation) {
+    if (selectedConversation) {
+      activeConversationId.value = selectedConversation.id
+      messages.value = selectedConversation.messages
+      sessionId.value = selectedConversation.sessionId ?? null
+      streamError.value = ''
+      emergencyOverride.value = false
+	clearStreamActivities()
       return
     }
 
-    activeConversationId.value = selectedConversation.id
-    messages.value = selectedConversation.messages
-    sessionId.value = selectedConversation.sessionId ?? null
-    streamError.value = ''
-    emergencyOverride.value = false
-	clearStreamActivities()
+    const selectedSummary = historySummaries.value.find(
+      (summary) => summary.id === conversationId,
+    )
+    if (!selectedSummary?.sessionId) {
+      return
+    }
+
+    try {
+      await openPersistedConversation(selectedSummary.sessionId)
+    } catch (_error) {
+      streamError.value = 'Unable to load this conversation.'
+    }
   }
 
   function resetEmergencyState() {
@@ -791,11 +978,15 @@ export const useChatStore = defineStore('chat', () => {
     (nextToken) => {
       if (!nextToken) {
         conversations.value = []
+        historySummaries.value = []
         messages.value = []
         activeConversationId.value = null
         sessionId.value = null
         streamError.value = ''
         emergencyOverride.value = false
+        historyNextCursor.value = null
+        historyHasMore.value = true
+        isLoadingMoreHistory.value = false
         clearPromptBurstState()
         clearStreamActivities()
       }
@@ -809,7 +1000,7 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     if (!activeConversationId.value) {
-      startNewConversation(prompt)
+      ensureDraftConversationActive()
     }
 
     streamError.value = ''
@@ -841,7 +1032,11 @@ export const useChatStore = defineStore('chat', () => {
     clearPromptBurstState()
     clearStreamActivities()
 
-    setLatestConversationAsActive()
+    if (selectedSessionId != null) {
+      removeHistorySummary(selectedSessionId)
+    }
+
+    startNewConversation()
 
     if (selectedSessionId) {
       fetchWithAuthRecovery(
@@ -860,11 +1055,14 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming,
     streamActivities,
     isSyncingHistory,
+    isLoadingMoreHistory,
+    historyHasMore,
     emergencyOverride,
     streamError,
     sessionId,
     sendMessage,
-    synchronizeHistoryOnStartup,
+    initializeChatScreen,
+    loadConversationHistoryPage,
     startNewConversation,
     selectConversation,
     clearChat,

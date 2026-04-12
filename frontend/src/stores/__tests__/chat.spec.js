@@ -31,7 +31,7 @@ function buildStreamingBody(events) {
 describe('chat store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    localStorage.clear()
+    globalThis.localStorage?.clear?.()
     vi.restoreAllMocks()
   })
 
@@ -305,18 +305,11 @@ describe('chat store', () => {
     expect(chatStore.streamError).toBe('')
   })
 
-  it('syncs server history on startup when sync token changed', async () => {
+  it('initializes a fresh draft and lazy history summaries on startup', async () => {
     const authStore = useAuthStore()
     authStore.token = 'test-token'
 
     vi.spyOn(apiClient, 'get')
-      .mockResolvedValueOnce({
-        data: {
-          latest_updated_at: '2026-04-09T12:00:00Z',
-          session_count: 1,
-          message_count: 2,
-        },
-      })
       .mockResolvedValueOnce({
         data: {
           sessions: [
@@ -325,55 +318,65 @@ describe('chat store', () => {
               title: 'my knee hurts',
               created_at: '2026-04-09T11:00:00Z',
               updated_at: '2026-04-09T12:00:00Z',
-              messages: [
-                { role: 'user', content: 'my knee hurts', created_at: '2026-04-09T11:00:01Z' },
-                { role: 'assistant', content: 'tell me more', created_at: '2026-04-09T11:00:02Z' },
-              ],
             },
+          ],
+          next_cursor: null,
+          has_more: false,
+        },
+      })
+
+    const chatStore = useChatStore()
+    await chatStore.initializeChatScreen()
+
+    expect(chatStore.conversationSummaries).toHaveLength(2)
+    expect(chatStore.activeConversationId).not.toBe('session-55')
+    expect(chatStore.sessionId).toBe(null)
+    expect(chatStore.messages).toEqual([])
+    expect(chatStore.conversationSummaries[0].isDraft).toBe(true)
+    expect(chatStore.conversationSummaries[1]).toMatchObject({
+      id: 'session-55',
+      title: 'my knee hurts',
+      sessionId: 55,
+    })
+  })
+
+  it('hydrates a selected persisted conversation on demand and restores its session id', async () => {
+    const authStore = useAuthStore()
+    authStore.token = 'test-token'
+
+    vi.spyOn(apiClient, 'get')
+      .mockResolvedValueOnce({
+        data: {
+          sessions: [
+            {
+              id: 7,
+              title: 'conversation one',
+              created_at: '2026-04-10T09:00:00Z',
+              updated_at: '2026-04-10T09:05:00Z',
+            },
+          ],
+          next_cursor: null,
+          has_more: false,
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          id: 7,
+          title: 'conversation one',
+          created_at: '2026-04-10T09:00:00Z',
+          updated_at: '2026-04-10T09:05:00Z',
+          messages: [
+            { role: 'user', message_kind: 'text', content: 'conversation one', created_at: '2026-04-10T09:00:01Z' },
+            { role: 'assistant', message_kind: 'text', content: 'first reply', created_at: '2026-04-10T09:00:02Z' },
           ],
         },
       })
 
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      headers: { get: () => null },
-      body: buildStreamingBody(['data: hello there\n\n']),
-    })
-
     const chatStore = useChatStore()
-    await chatStore.synchronizeHistoryOnStartup({ force: true })
+    await chatStore.initializeChatScreen()
 
-    expect(chatStore.conversationSummaries).toHaveLength(1)
-    expect(chatStore.activeConversationId).toBe('session-55')
-    expect(chatStore.sessionId).toBe(55)
-    expect(chatStore.messages.some((message) => message.content.includes('knee'))).toBe(true)
-  })
+    await chatStore.selectConversation('session-7')
 
-  it('switches to a selected past conversation and restores its session id', async () => {
-    const authStore = useAuthStore()
-    authStore.token = 'test-token'
-
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-    fetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        headers: { get: (name) => (name === 'X-Chat-Session-Id' ? '7' : null) },
-        body: buildStreamingBody(['data: first reply\n\n']),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        headers: { get: (name) => (name === 'X-Chat-Session-Id' ? '13' : null) },
-        body: buildStreamingBody(['data: second reply\n\n']),
-      })
-
-    const chatStore = useChatStore()
-    await chatStore.sendMessage('conversation one')
-    const firstConversationId = chatStore.activeConversationId
-
-    chatStore.startNewConversation('conversation two')
-    await chatStore.sendMessage('conversation two')
-
-    chatStore.selectConversation(firstConversationId)
     expect(chatStore.sessionId).toBe(7)
     expect(chatStore.messages.some((message) => message.content.includes('conversation one'))).toBe(true)
   })
@@ -396,7 +399,7 @@ describe('chat store', () => {
     chatStore.clearChat()
 
     expect(apiClient.delete).toHaveBeenCalledWith('/api/chat/sessions/101')
-    expect(chatStore.activeConversationId).toBe(null)
+    expect(chatStore.activeConversationId).not.toBe(null)
     expect(chatStore.sessionId).toBe(null)
     expect(chatStore.messages).toEqual([])
   })

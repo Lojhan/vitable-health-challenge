@@ -8,6 +8,9 @@ from chatbot.features.chat.application.use_cases.delete_chat_session import Dele
 from chatbot.features.chat.application.use_cases.get_chat_history import (
     GetChatHistoryUseCase,
 )
+from chatbot.features.chat.application.use_cases.get_chat_session import (
+    GetChatSessionUseCase,
+)
 from chatbot.features.chat.application.use_cases.get_chat_history_sync import (
     GetChatHistorySyncUseCase,
 )
@@ -43,6 +46,15 @@ def build_get_chat_history_use_case(
     *, serialize_session: Callable[[object], dict[str, object]],
 ) -> GetChatHistoryUseCase:
     return GetChatHistoryUseCase(
+        uow=DjangoChatUnitOfWork(),
+        serialize_session=serialize_session,
+    )
+
+
+def build_get_chat_session_use_case(
+    *, serialize_session: Callable[[object], dict[str, object]],
+) -> GetChatSessionUseCase:
+    return GetChatSessionUseCase(
         uow=DjangoChatUnitOfWork(),
         serialize_session=serialize_session,
     )

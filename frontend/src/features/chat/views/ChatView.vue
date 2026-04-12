@@ -20,12 +20,16 @@ const {
   messageInputId,
   conversationSummaries,
   activeConversationId,
+  historyHasMore,
+  isLoadingHistory,
+  isLoadingMoreHistory,
   submitMessage,
   resetAlert,
   toggleSidebar,
   toggleHeaderMenu,
   handleNewConversation,
   handleClearChat,
+  handleLoadMoreHistory,
   handleStructuredQuickReply,
   handleSelectConversation,
   formatConversationDate,
@@ -50,9 +54,13 @@ const {
         :sidebar-open="sidebarOpen"
         :conversation-summaries="conversationSummaries"
         :active-conversation-id="activeConversationId"
+        :history-has-more="historyHasMore"
+        :is-loading-history="isLoadingHistory"
+        :is-loading-more-history="isLoadingMoreHistory"
         :format-conversation-date="formatConversationDate"
         @close="closeSidebar"
         @new-conversation="handleNewConversation"
+        @request-more="handleLoadMoreHistory"
         @select-conversation="handleSelectConversation"
       />
 

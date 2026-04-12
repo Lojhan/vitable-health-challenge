@@ -42,7 +42,15 @@ class ChatUnitOfWork(Protocol):
 
     def delete_session(self, *, user_id: int, session_id: int) -> bool: ...
 
-    def list_user_sessions_prefetched(self, *, user_id: int) -> list[Any]: ...
+    def list_user_session_summaries_page(
+        self,
+        *,
+        user_id: int,
+        cursor: str | None,
+        page_size: int,
+    ) -> tuple[list[Any], str | None, bool]: ...
+
+    def get_user_session_prefetched(self, *, user_id: int, session_id: int) -> Any | None: ...
 
     def get_history_sync_payload(self, *, user_id: int) -> dict[str, object]: ...
 
