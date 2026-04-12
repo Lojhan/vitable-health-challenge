@@ -15,11 +15,119 @@ from chatbot.features.ai.base import (
     UserProfileSchema,
 )
 from chatbot.features.ai.openrouter_agent import OpenRouterAgent
+from chatbot.features.chat.stream_protocol import (
+    PREFIX_ERROR,
+    PREFIX_FINISH,
+    PREFIX_STATUS,
+    PREFIX_TEXT_DELTA,
+    PREFIX_TOOL_RESULT,
+)
 from chatbot.features.scheduling.models import Appointment
 
 
 def _pk(instance: object) -> int:
     return cast(int, cast(Any, instance).pk)
+
+
+def _parse_protocol_lines(lines: list[str]) -> list[tuple[str, Any]]:
+    """Parse protocol-encoded lines into (prefix, payload) tuples."""
+    result = []
+    for line in lines:
+        stripped = line.strip()
+        if len(stripped) < 2 or stripped[1] != ':':
+            result.append(('raw', stripped))
+            continue
+        prefix = stripped[0]
+        try:
+            payload = json.loads(stripped[2:])
+        except (json.JSONDecodeError, IndexError):
+            payload = stripped[2:]
+        result.append((prefix, payload))
+    return result
+
+
+def _build_streaming_chunks(
+    *,
+    text_deltas: list[str] | None = None,
+    tool_calls: list[dict] | None = None,
+    finish_reason: str = 'stop',
+) -> list[SimpleNamespace]:
+    """Build a list of ChatCompletionChunk-like objects for streaming mock."""
+    chunks = []
+    for delta_text in (text_deltas or []):
+        chunks.append(SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(content=delta_text, tool_calls=None),
+                finish_reason=None,
+            )],
+        ))
+
+    if tool_calls:
+        for i, tc in enumerate(tool_calls):
+            # First chunk: id + name
+            chunks.append(SimpleNamespace(
+                choices=[SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        tool_calls=[SimpleNamespace(
+                            index=i,
+                            id=tc.get('id', f'tc-{i}'),
+                            function=SimpleNamespace(
+                                name=tc.get('name', ''),
+                                arguments='',
+                            ),
+                        )],
+                    ),
+                    finish_reason=None,
+                )],
+            ))
+            # Second chunk: arguments
+            chunks.append(SimpleNamespace(
+                choices=[SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        tool_calls=[SimpleNamespace(
+                            index=i,
+                            id=None,
+                            function=SimpleNamespace(
+                                name=None,
+                                arguments=tc.get('arguments', '{}'),
+                            ),
+                        )],
+                    ),
+                    finish_reason=None,
+                )],
+            ))
+
+    # Finish chunk
+    chunks.append(SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=None, tool_calls=None),
+            finish_reason=finish_reason,
+        )],
+    ))
+    return chunks
+
+
+class FakeStreamingGateway:
+    """A fake gateway that yields pre-built streaming chunks for each round."""
+
+    def __init__(self, rounds: list[list[SimpleNamespace]]):
+        self._rounds = list(rounds)
+        self._round_index = 0
+        self.calls = 0
+
+    async def create_chat_completion(self, *, model, messages, tools, max_tokens):
+        raise NotImplementedError('Use create_streaming_chat_completion')
+
+    async def create_streaming_chat_completion(self, *, model, messages, tools, max_tokens):
+        if self._round_index >= len(self._rounds):
+            raise RuntimeError('No more streaming rounds configured')
+        chunks = self._rounds[self._round_index]
+        self._round_index += 1
+        self.calls += 1
+        for chunk in chunks:
+            yield chunk
 
 
 def test_openrouter_agent_implements_base_interface():
@@ -170,55 +278,43 @@ def test_backend_catches_emergency_override_tag(monkeypatch):
 def test_stream_response_resolves_tools_before_yielding(monkeypatch):
     monkeypatch.setenv('OPENROUTER_API_KEY', 'test-key')
 
-    agent = OpenRouterAgent(model='openai/gpt-4o-mini')
-    first_response = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(
-                    content='',
-                    tool_calls=[
-                        SimpleNamespace(
-                            id='tool-call-1',
-                            function=SimpleNamespace(
-                                name='check_availability',
-                                arguments=json.dumps(
-                                    {
-                                        'date_range_str': (
-                                            '2026-04-12T09:00:00/2026-04-12T11:00:00'
-                                        )
-                                    }
-                                ),
-                            ),
-                        )
-                    ],
-                )
-            )
-        ]
+    # Round 1: tool call to check_availability
+    round1 = _build_streaming_chunks(
+        tool_calls=[{
+            'id': 'tool-call-1',
+            'name': 'check_availability',
+            'arguments': json.dumps({'date_range_str': '2026-04-12T09:00:00/2026-04-12T11:00:00'}),
+        }],
     )
-    second_response = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(content='Here are available slots.')
-            )
-        ]
-    )
+    # Round 2: text response
+    round2 = _build_streaming_chunks(text_deltas=['Here are available slots.'])
 
-    mocked_create = AsyncMock(side_effect=[first_response, second_response])
-    agent._client.chat.completions.create = mocked_create
+    gateway = FakeStreamingGateway(rounds=[round1, round2])
+    agent = OpenRouterAgent(api_key='test-key', gateway=gateway)
 
     async def collect_chunks():
-        return [
-            chunk
-            async for chunk in agent.stream_response(
-                'tomorrow morning',
-                history=[{'role': 'user', 'content': 'I have a sore throat'}],
-            )
-        ]
+        return [chunk async for chunk in agent.stream_response(
+            'tomorrow morning',
+            history=[{'role': 'user', 'content': 'I have a sore throat'}],
+        )]
 
-    streamed_chunks = asyncio.run(collect_chunks())
+    streamed = asyncio.run(collect_chunks())
+    parsed = _parse_protocol_lines(streamed)
 
-    assert streamed_chunks == ['Here are available slots.']
-    assert mocked_create.await_count == 2
+    # Should have: status, tool_result (availability), text_delta, finish
+    prefixes = [p for p, _ in parsed]
+    assert PREFIX_STATUS in prefixes
+    assert PREFIX_TOOL_RESULT in prefixes
+    assert PREFIX_TEXT_DELTA in prefixes
+    assert PREFIX_FINISH in prefixes
+
+    # Check tool_result has availability data
+    tool_results = [(p, v) for p, v in parsed if p == PREFIX_TOOL_RESULT]
+    assert len(tool_results) >= 1
+    assert tool_results[0][1]['ui_kind'] == 'availability'
+    assert isinstance(tool_results[0][1]['result']['grouped_human_utc'], list)
+
+    assert gateway.calls == 2
 
 
 @pytest.mark.django_db(transaction=True)
@@ -301,62 +397,94 @@ def test_openrouter_agent_integration_executes_scheduling_tools(monkeypatch):
     assert booking_tool_payload['time_slot_human_utc'] == 'Sunday, April 12, 2026 at 10:00 AM UTC'
 
 
-def test_stream_response_splits_multiple_message_blocks(monkeypatch):
+def test_stream_response_emits_text_deltas_token_by_token(monkeypatch):
     monkeypatch.setenv('OPENROUTER_API_KEY', 'test-key')
 
-    agent = OpenRouterAgent(model='openai/gpt-4o-mini')
-    mocked_create = AsyncMock(
-        return_value=SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content='First message.<MESSAGE_BREAK>Second message.'
-                    )
-                )
-            ]
-        )
-    )
-    agent._client.chat.completions.create = mocked_create
+    chunks = _build_streaming_chunks(text_deltas=['Hello', ' there', '.'])
+    gateway = FakeStreamingGateway(rounds=[chunks])
+    agent = OpenRouterAgent(api_key='test-key', gateway=gateway)
 
     async def collect_chunks():
         return [chunk async for chunk in agent.stream_response('hello')]
 
-    streamed_chunks = asyncio.run(collect_chunks())
+    streamed = asyncio.run(collect_chunks())
+    parsed = _parse_protocol_lines(streamed)
 
-    assert streamed_chunks == ['First message.', 'Second message.']
+    text_deltas = [v for p, v in parsed if p == PREFIX_TEXT_DELTA]
+    assert text_deltas == ['Hello', ' there', '.']
+    assert parsed[-1][0] == PREFIX_FINISH
+
+
+@pytest.mark.django_db(transaction=True)
+def test_stream_response_emits_tool_result_for_ui_mapped_tool(monkeypatch):
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'test-key')
+
+    # Round 1: call list_providers
+    round1 = _build_streaming_chunks(
+        tool_calls=[{
+            'id': 'tool-call-1',
+            'name': 'list_providers',
+            'arguments': '{}',
+        }],
+    )
+    # Round 2: text response after tool result
+    round2 = _build_streaming_chunks(text_deltas=['Here are the providers.'])
+
+    gateway = FakeStreamingGateway(rounds=[round1, round2])
+    agent = OpenRouterAgent(api_key='test-key', gateway=gateway)
+
+    async def collect_chunks():
+        return [chunk async for chunk in agent.stream_response('show providers')]
+
+    streamed = asyncio.run(collect_chunks())
+    parsed = _parse_protocol_lines(streamed)
+
+    tool_results = [(p, v) for p, v in parsed if p == PREFIX_TOOL_RESULT]
+    assert len(tool_results) >= 1
+    assert tool_results[0][1]['ui_kind'] == 'providers'
+    assert isinstance(tool_results[0][1]['result'], list)
 
 
 def test_stream_response_returns_fallback_text_on_provider_error(monkeypatch):
     monkeypatch.setenv('OPENROUTER_API_KEY', 'test-key')
 
-    agent = OpenRouterAgent(model='openai/gpt-4o-mini')
-    agent._client.chat.completions.create = AsyncMock(
-        side_effect=RuntimeError('provider unavailable')
-    )
+    class FailingGateway:
+        async def create_streaming_chat_completion(self, **kwargs):
+            raise RuntimeError('provider unavailable')
+            yield  # noqa: unreachable — makes this an async generator
+
+    agent = OpenRouterAgent(api_key='test-key', gateway=FailingGateway())
 
     async def collect_chunks():
         return [chunk async for chunk in agent.stream_response('hello')]
 
-    streamed_chunks = asyncio.run(collect_chunks())
+    streamed = asyncio.run(collect_chunks())
+    parsed = _parse_protocol_lines(streamed)
 
-    assert streamed_chunks == ['I could not process your request right now. Please try again.']
+    error_events = [v for p, v in parsed if p == PREFIX_ERROR]
+    assert len(error_events) == 1
+    assert 'could not process' in error_events[0].lower()
 
 
 def test_stream_response_logs_provider_error(monkeypatch, caplog):
     monkeypatch.setenv('OPENROUTER_API_KEY', 'test-key')
 
-    agent = OpenRouterAgent(model='openai/gpt-4o-mini')
-    agent._client.chat.completions.create = AsyncMock(
-        side_effect=RuntimeError('provider unavailable')
-    )
+    class FailingGateway:
+        async def create_streaming_chat_completion(self, **kwargs):
+            raise RuntimeError('provider unavailable')
+            yield  # noqa: unreachable
+
+    agent = OpenRouterAgent(api_key='test-key', gateway=FailingGateway())
 
     async def collect_chunks():
         return [chunk async for chunk in agent.stream_response('hello')]
 
     with caplog.at_level('ERROR'):
-        streamed_chunks = asyncio.run(collect_chunks())
+        streamed = asyncio.run(collect_chunks())
 
-    assert streamed_chunks == ['I could not process your request right now. Please try again.']
+    parsed = _parse_protocol_lines(streamed)
+    error_events = [v for p, v in parsed if p == PREFIX_ERROR]
+    assert len(error_events) == 1
     assert 'ai.stream_response.failed' in caplog.text
 
 

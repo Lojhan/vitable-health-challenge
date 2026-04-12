@@ -1,8 +1,5 @@
 <script setup>
-import DOMPurify from 'dompurify'
-import { marked } from 'marked'
 import { computed } from 'vue'
-import { normalizeStructuredPayload } from '../lib/structuredPayload'
 
 const props = defineProps({
 	message: {
@@ -12,13 +9,9 @@ const props = defineProps({
 })
 
 const isUserMessage = computed(() => props.message.role === 'user')
-const structuredPayload = computed(() => normalizeStructuredPayload(props.message.content))
-const markdownHtml = computed(() => {
-	if (structuredPayload.value.kind !== 'text') {
-		return ''
-	}
-
-	return DOMPurify.sanitize(marked.parse(String(structuredPayload.value.data ?? '')))
+const isPlainText = computed(() => {
+	const kind = String(props.message.messageKind ?? 'text').trim().toLowerCase()
+	return kind === 'text'
 })
 
 const bubbleClasses = computed(() => {
@@ -38,35 +31,11 @@ const bubbleClasses = computed(() => {
 		]"
 		:aria-label="`${message.role === 'user' ? 'You' : 'AI Nurse'}: ${typeof message.content === 'string' ? message.content : 'Response'}`"
 	>
-		<p v-if="isUserMessage" class="m-0 whitespace-pre-wrap">
+		<p v-if="isUserMessage || isPlainText" class="m-0 whitespace-pre-wrap">
 			{{ message.content }}
 		</p>
-
-		<div v-else class="m-0 markdown-body" v-html="markdownHtml" />
 	</article>
 </template>
 
 <style scoped>
-.markdown-body :deep(p) {
-	margin: 0.25rem 0;
-}
-
-.markdown-body :deep(p:first-child) {
-	margin-top: 0;
-}
-
-.markdown-body :deep(p:last-child) {
-	margin-bottom: 0;
-}
-
-.markdown-body :deep(ul),
-.markdown-body :deep(ol) {
-	margin: 0.35rem 0 0.35rem 1.1rem;
-	padding: 0;
-}
-
-.markdown-body :deep(li) {
-	margin: 0.15rem 0;
-}
-
 </style>

@@ -31,6 +31,14 @@ vi.mock('../../../../stores/chat', () => ({
 	useChatStore: () => chatStore,
 }))
 
+vi.mock('../../structured/services/structuredInteractionApi', () => ({
+	fetchStructuredInteractionState: vi.fn(async () => ({ interaction_id: '', selection: null })),
+	saveStructuredInteractionState: vi.fn(async (params) => ({
+		interaction_id: params?.interactionId ?? '',
+		selection: params?.selection ? { kind: params.kind, ...params.selection } : null,
+	})),
+}))
+
 vi.mock('primevue/button', async () => {
 	const { defineComponent } = await import('vue')
 

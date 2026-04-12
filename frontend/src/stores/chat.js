@@ -1,19 +1,15 @@
+import { fetchEventSource } from '@microsoft/fetch-event-source'
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { apiClient, getApiBaseUrl } from '../lib/apiClient'
 import { useAuthStore } from '../features/auth/stores/auth'
 
-const TYPEWRITER_DELAY_MS = 16
 const FRONTEND_BURST_WINDOW_MS = 1000
 const FRONTEND_BURST_SEPARATOR_TOKEN = '<USER_MESSAGE_BURST_SEPARATOR>'
 const MERGED_IN_PREVIOUS_RESPONSE_TOKEN = '<MERGED_IN_PREVIOUS_RESPONSE>'
 let messageCounter = 0
 let conversationCounter = 0
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
 
 function buildMessageId() {
   messageCounter += 1
@@ -35,6 +31,123 @@ function buildConversationTitle(prompt) {
     return 'New conversation'
   }
   return normalized.slice(0, 42)
+}
+
+function parseProtocolLine(raw) {
+  if (!raw || raw.length < 2 || raw[1] !== ':') {
+    return null
+  }
+  const prefix = raw[0]
+  const payload = raw.slice(2)
+  try {
+    return { prefix, payload: JSON.parse(payload) }
+  } catch (_error) {
+    return { prefix, payload }
+  }
+}
+
+function normalizeAssistantMessageKind(rawKind) {
+  const allowedKinds = new Set(['text', 'providers', 'availability', 'appointments', 'json'])
+  const normalized = String(rawKind ?? 'text').trim().toLowerCase()
+  return allowedKinds.has(normalized) ? normalized : 'text'
+}
+
+function stringifyStructuredContent(content) {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  try {
+    return JSON.stringify(content)
+  } catch (_error) {
+    return ''
+  }
+}
+
+/**
+ * Processes a single parsed data chunk from the SSE stream.
+ * Returns a signal object: { earlyReturn: true } when the caller must stop
+ * processing and return immediately (emergency or burst-merged).
+ */
+function processStreamChunk(chunk, { ensureAssistantMessage, updateMeta, onEarlyReturn, emergencyRef }) {
+  if (chunk === MERGED_IN_PREVIOUS_RESPONSE_TOKEN) {
+    onEarlyReturn()
+    return { earlyReturn: true }
+  }
+
+  const proto = parseProtocolLine(chunk)
+
+  if (!proto) {
+    // Drop SSE comment lines (heartbeat etc.) that leaked into the data stream
+    if (chunk.startsWith(':')) {
+      return {}
+    }
+    if (chunk === '<EMERGENCY_OVERRIDE>') {
+      emergencyRef.value = true
+      ensureAssistantMessage('text').content = 'Emergency signal received. Please call emergency services now.'
+      updateMeta()
+      onEarlyReturn()
+      return { earlyReturn: true }
+    }
+    ensureAssistantMessage('text').content += chunk
+    updateMeta()
+    return {}
+  }
+
+  // 0: text_delta
+  if (proto.prefix === '0') {
+    const delta = String(proto.payload ?? '')
+    if (delta === '<EMERGENCY_OVERRIDE>') {
+      emergencyRef.value = true
+      ensureAssistantMessage('text').content = 'Emergency signal received. Please call emergency services now.'
+      updateMeta()
+      onEarlyReturn()
+      return { earlyReturn: true }
+    }
+    
+    let currentMessage = ensureAssistantMessage('text')
+    const combined = currentMessage.content + delta
+    const parts = combined.split('\n\n')
+    
+    if (parts.length > 1) {
+      currentMessage.content = parts[0]
+      for (let i = 1; i < parts.length; i++) {
+        currentMessage = ensureAssistantMessage('text', true)
+        currentMessage.content = parts[i]
+      }
+    } else {
+      currentMessage.content = combined
+    }
+
+    updateMeta()
+    return {}
+  }
+
+  // 9: tool_result (structured UI component)
+  if (proto.prefix === '9') {
+    const data = proto.payload
+    const kind = normalizeAssistantMessageKind(data?.ui_kind)
+    const assistantTarget = ensureAssistantMessage(kind)
+    assistantTarget.messageKind = kind
+    assistantTarget.content = stringifyStructuredContent(data?.result)
+    updateMeta()
+    return {}
+  }
+
+  // s: status (loading indicator) — currently ignored, future: show pill
+  if (proto.prefix === 's') {
+    return {}
+  }
+
+  // 2: error
+  if (proto.prefix === '2') {
+    ensureAssistantMessage('text').content = String(proto.payload ?? 'An error occurred.')
+    updateMeta()
+    return {}
+  }
+
+  // d: finish
+  return {}
 }
 
 export const useChatStore = defineStore('chat', () => {
@@ -132,12 +245,23 @@ export const useChatStore = defineStore('chat', () => {
       createdAt: session.created_at,
       updatedAt: session.updated_at,
       sessionId: session.id,
-      messages: session.messages.map((message) => ({
-        id: buildMessageId(),
-        role: message.role,
-        messageKind: message.message_kind ?? 'text',
-        content: message.content,
-      })),
+      messages: session.messages.flatMap((message) => {
+        const messageKind = message.message_kind ?? 'text'
+        if (message.role === 'assistant' && messageKind === 'text' && typeof message.content === 'string' && message.content.includes('\n\n')) {
+          return message.content.split('\n\n').map((part) => ({
+            id: buildMessageId(),
+            role: message.role,
+            messageKind,
+            content: part,
+          }))
+        }
+        return [{
+          id: buildMessageId(),
+          role: message.role,
+          messageKind,
+          content: message.content,
+        }]
+      }),
     }))
 
     if (
@@ -290,13 +414,6 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function streamWithTypewriter(assistantMessage, chunk) {
-    for (const char of chunk) {
-      assistantMessage.content += char
-      await delay(TYPEWRITER_DELAY_MS)
-    }
-  }
-
   function resolveBurstItems(items) {
     items.forEach((item) => item.resolve())
   }
@@ -338,20 +455,33 @@ export const useChatStore = defineStore('chat', () => {
 
     pendingPromptBurst.value = []
     const prompt = burstItems.map((item) => item.prompt).join(FRONTEND_BURST_SEPARATOR_TOKEN)
-    const assistantMessage = {
-      id: buildMessageId(),
-      role: 'assistant',
-      messageKind: 'text',
-      content: '',
+    let activeAssistantMessage = null
+
+    function ensureAssistantMessage(kind, forceNew = false) {
+      if (!forceNew && activeAssistantMessage?.messageKind === kind) {
+        return activeAssistantMessage
+      }
+
+      const nextAssistantMessage = {
+        id: buildMessageId(),
+        role: 'assistant',
+        messageKind: kind,
+        content: '',
+      }
+      messages.value.push(nextAssistantMessage)
+      activeAssistantMessage = messages.value[messages.value.length - 1]
+      return activeAssistantMessage
     }
-    messages.value.push(assistantMessage)
+
     updateActiveConversationMeta()
 
     activeStreamCount.value += 1
     isSendingPromptBurst = true
 
     try {
-      const buildRequest = () => fetch(`${getApiBaseUrl()}/api/chat`, {
+      let activeController = new AbortController()
+
+      const buildRequestOptions = () => ({
         method: 'POST',
         headers: {
           Authorization: `Bearer ${authStore.token}`,
@@ -361,92 +491,78 @@ export const useChatStore = defineStore('chat', () => {
           message: prompt,
           session_id: sessionId.value,
         }),
+        signal: activeController.signal,
       })
 
-      let response = await buildRequest()
-
-      if (response.status === 401) {
-        const refreshed = await authStore.refreshAccessToken()
-        if (!refreshed) {
-          clearChat()
-          authStore.logout()
-          streamError.value = 'Your session expired. Please login again.'
+      const chunkCtx = {
+        ensureAssistantMessage,
+        updateMeta: updateActiveConversationMeta,
+        onEarlyReturn: () => {
+          activeController.abort()
           resolveBurstItems(burstItems)
-          return
-        }
-        response = await buildRequest()
+        },
+        emergencyRef: emergencyOverride,
       }
 
-      const responseSessionId = response.headers.get('X-Chat-Session-Id')
-      if (responseSessionId) {
-        syncSessionIdToActiveConversation(Number.parseInt(responseSessionId, 10))
-        updateActiveConversationMeta()
-      }
-
-      if (!response.ok || !response.body) {
-        throw new Error('Unable to stream chat response.')
-      }
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder('utf-8')
-      let buffer = ''
       let receivedAtLeastOneChunk = false
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) {
-          break
-        }
-
-        buffer += decoder.decode(value, { stream: true })
-        const events = buffer.split('\n\n')
-        buffer = events.pop() ?? ''
-
-        for (const event of events) {
-          const lines = event
-            .split('\n')
-            .filter((candidateLine) => candidateLine.startsWith('data: '))
-
-          if (lines.length === 0) {
-            continue
-          }
-
-          receivedAtLeastOneChunk = true
-          const chunk = lines.map((line) => line.slice(6)).join('\n')
-
-          if (chunk === '<EMERGENCY_OVERRIDE>') {
-            emergencyOverride.value = true
-            assistantMessage.content =
-              'Emergency signal received. Please call emergency services now.'
-            updateActiveConversationMeta()
-            resolveBurstItems(burstItems)
-            return
-          }
-
-          if (chunk === MERGED_IN_PREVIOUS_RESPONSE_TOKEN) {
-            if (!assistantMessage.content) {
-              messages.value = messages.value.filter((message) => message.id !== assistantMessage.id)
-              updateActiveConversationMeta()
+      await fetchEventSource(`${getApiBaseUrl()}/api/chat`, {
+        ...buildRequestOptions(),
+        fetch: async (input, init) => {
+          let response = await fetch(input, init)
+          if (response.status === 401) {
+            const refreshed = await authStore.refreshAccessToken()
+            if (!refreshed) {
+              clearChat()
+              authStore.logout()
+              streamError.value = 'Your session expired. Please login again.'
+              activeController.abort()
+              throw new Error('Unauthorized')
             }
-            resolveBurstItems(burstItems)
-            return
+            // Update token and retry
+            const headers = new Headers(init.headers)
+            headers.set('Authorization', `Bearer ${authStore.token}`)
+            init.headers = headers
+            response = await fetch(input, init)
+          }
+          return response
+        },
+        async onopen(response) {
+          const responseSessionId = response.headers.get('X-Chat-Session-Id')
+          if (responseSessionId) {
+            syncSessionIdToActiveConversation(Number.parseInt(responseSessionId, 10))
+            updateActiveConversationMeta()
           }
 
-          await streamWithTypewriter(assistantMessage, chunk)
-          updateActiveConversationMeta()
+          if (!response.ok) {
+            throw new Error(`Stream failed: ${response.status}`)
+          }
+        },
+        onmessage(msg) {
+          if (!msg.data) return
+          const result = processStreamChunk(msg.data, chunkCtx)
+          receivedAtLeastOneChunk = true
+          if (result.earlyReturn) {
+            activeController.abort()
+          }
+        },
+        onerror(err) {
+          throw err // Stop retrying on other errors
         }
-      }
+      })
 
-      if (!receivedAtLeastOneChunk && !assistantMessage.content) {
-        assistantMessage.content =
+      if (!receivedAtLeastOneChunk && !messages.value.some((message) => message.role === 'assistant' && message.content)) {
+        const textMessage = ensureAssistantMessage('text')
+        textMessage.content =
           'I could not generate a response. Please try again.'
         updateActiveConversationMeta()
       }
 
       resolveBurstItems(burstItems)
     } catch (_error) {
-      if (!assistantMessage.content) {
-        assistantMessage.content = 'I could not generate a response. Please try again.'
+      if (!messages.value.some((message) => message.role === 'assistant' && message.content)) {
+        const textMessage = ensureAssistantMessage('text')
+        textMessage.content = 'I could not generate a response. Please try again.'
         updateActiveConversationMeta()
       }
       streamError.value = 'Chat stream interrupted. Please try again.'

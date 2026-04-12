@@ -24,6 +24,14 @@ from chatbot.features.ai.infrastructure.gateway import (
 )
 from chatbot.features.ai.infrastructure.temporal_context import build_temporal_context_lines
 from chatbot.features.ai.tool_registry import TOOL_EXECUTOR_BY_NAME
+from chatbot.features.ai.ui_tool_registry import get_ui_kind
+from chatbot.features.chat.stream_protocol import (
+    encode_error,
+    encode_finish,
+    encode_status,
+    encode_text_delta,
+    encode_tool_result,
+)
 from chatbot.features.core.observability import (
     AuditEventData,
     StructuredLogger,
@@ -36,7 +44,6 @@ obs_logger = StructuredLogger(__name__)
 
 
 class OpenRouterAgent(BaseAgentInterface):
-    MESSAGE_BREAK_TOKEN = '<MESSAGE_BREAK>'
     DEFAULT_MAX_TOOL_ROUNDS = 6
     DEFAULT_TIMEOUT_BUDGET_MS = 12000
     DEFAULT_PER_TOOL_LIMIT = 4
@@ -133,14 +140,21 @@ class OpenRouterAgent(BaseAgentInterface):
             'times). Prefer period summaries like morning/afternoon/night with a '
             'time window (for example, 9:00 AM - 12:00 PM), and include the '
             'appointment_duration_note in scheduling responses. '
+            'AUTO-RENDERED TOOL RESULTS: When you call list_providers, check_availability, '
+            'or list_my_appointments, the results are automatically displayed to the user as '
+            'rich visual components (cards, tables, etc.). Do NOT repeat, re-list, dump as JSON, '
+            'or narrate the returned data in your text response. Instead, provide only a brief '
+            'contextual comment (e.g. "Here are some providers that match" or '
+            '"I found available slots for next week"). The user can already see the full data '
+            'in the rendered component.\n'
             'PROVIDER WORKFLOW: When the user wants to schedule or check availability, '
             'call list_providers first to discover available doctors. Present the '
             'providers to the user and confirm their choice. Always pass the chosen '
             'provider_id when calling check_availability, book_appointment, or '
             'update_my_appointment. If the user expresses a preferred doctor by name, '
             'match it to the provider_id from list_providers output before proceeding. '
-            f'If you intentionally want to send multiple '
-            f'assistant bubbles, separate them using {self.MESSAGE_BREAK_TOKEN}.'
+            'If the list_providers JSON output is already in the conversation history, '
+            'you do NOT need to call it again and can proceed directly.'
         )
 
         if self._user_profile is None:
@@ -373,6 +387,10 @@ class OpenRouterAgent(BaseAgentInterface):
 
             for tool_call in tool_calls:
                 tool_name = self._tool_name(tool_call)
+                tool_result: object = {
+                    'error': f'Tool {tool_name} failed unexpectedly.',
+                    'tool_name': tool_name,
+                }
                 sandbox.register_call(tool_name)
                 if tool_name not in allowed_tools:
                     tool_result = {
@@ -451,10 +469,234 @@ class OpenRouterAgent(BaseAgentInterface):
         prompt: str,
         history: list[dict[str, str]] | None = None,
     ) -> AsyncGenerator[str]:
-        # Resolve tool calls first, then emit one SSE chunk per message block.
+        """True token-streaming async generator using Data Stream Protocol.
+
+        Yields protocol-encoded lines (``{prefix}:{payload}\\n``) that
+        ``sse.py`` wraps in ``data:`` frames.
+        """
         try:
-            with TimingContext('ai.generate_response'):
-                final_text = await self.generate_response(prompt=prompt, history=history)
+            pre_policy = self._policy_engine.evaluate_pre_generation(prompt)
+            if pre_policy.final_response is not None:
+                yield encode_text_delta(pre_policy.final_response)
+                yield encode_finish()
+                return
+
+            messages = self._planner.build_messages(
+                system_prompt=self._build_system_prompt(),
+                prompt=prompt,
+                history=history,
+            )
+            allowed_tools = self._policy_engine.allowed_tool_names(
+                user_id=self._user_id,
+                available_tool_names=TOOL_EXECUTOR_BY_NAME.keys(),
+            )
+            sandbox = ToolExecutionSandbox(
+                max_tool_rounds=self._max_tool_rounds,
+                max_tool_calls=self._max_tool_calls,
+                timeout_budget_ms=self._timeout_budget_ms,
+                per_tool_limit=self.DEFAULT_PER_TOOL_LIMIT,
+            )
+
+            for _ in range(sandbox.max_tool_rounds):
+                if not sandbox.has_time_budget():
+                    yield encode_text_delta(
+                        'I could not finalize your request within the execution budget. '
+                        'Please try again.'
+                    )
+                    yield encode_finish('timeout')
+                    return
+
+                # -- Stream one completion round --
+                text_content = ''
+                tool_calls_by_index: dict[int, dict[str, str]] = {}
+                finish_reason = 'stop'
+
+                async for chunk in self._gateway.create_streaming_chat_completion(
+                    model=self._model,
+                    messages=messages,
+                    tools=self.get_tools(),
+                    max_tokens=self._max_tokens,
+                ):
+                    chunk = cast(Any, chunk)
+                    if not chunk.choices:
+                        continue
+
+                    delta = chunk.choices[0].delta
+                    choice_finish = chunk.choices[0].finish_reason
+
+                    # Text delta — forward immediately
+                    if delta.content:
+                        text_content += delta.content
+                        yield encode_text_delta(delta.content)
+
+                    # Tool call delta — buffer arguments
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tool_calls_by_index:
+                                tool_calls_by_index[idx] = {
+                                    'id': tc_delta.id or '',
+                                    'name': '',
+                                    'arguments': '',
+                                }
+                            entry = tool_calls_by_index[idx]
+                            if tc_delta.id:
+                                entry['id'] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    entry['name'] = tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    entry['arguments'] += tc_delta.function.arguments
+
+                    if choice_finish:
+                        finish_reason = choice_finish
+
+                # -- No tool calls → done --
+                if not tool_calls_by_index:
+                    final_text = self._normalize_response_text(text_content)
+                    if self.backend_catches_emergency_override(final_text):
+                        yield encode_text_delta('<EMERGENCY_OVERRIDE>')
+                    elif not text_content.strip():
+                        # Nothing was streamed (empty response) — send normalized fallback
+                        yield encode_text_delta(final_text)
+
+                    self._memory_manager.remember(
+                        {'prompt': prompt, 'response': text_content, 'tool_calls': []}
+                    )
+                    self._audit_logger.log_turn_event(
+                        event='turn_completed',
+                        prompt=prompt,
+                        data={'model': self._model, 'tool_calls': 0},
+                    )
+                    yield encode_finish(finish_reason)
+                    return
+
+                # -- Tool calls: execute each --
+                if not sandbox.can_accept_calls(len(tool_calls_by_index)):
+                    yield encode_text_delta(
+                        'I could not finalize your request because the tool call budget '
+                        'was exceeded. Please try again.'
+                    )
+                    yield encode_finish('tool_budget_exceeded')
+                    return
+
+                # Append assistant message with tool_calls to conversation
+                assistant_tool_calls = []
+                for idx in sorted(tool_calls_by_index):
+                    tc = tool_calls_by_index[idx]
+                    assistant_tool_calls.append({
+                        'id': tc['id'],
+                        'type': 'function',
+                        'function': {
+                            'name': tc['name'],
+                            'arguments': tc['arguments'],
+                        },
+                    })
+
+                messages.append({
+                    'role': 'assistant',
+                    'content': text_content or '',
+                    'tool_calls': assistant_tool_calls,
+                })
+
+                for tc_info in assistant_tool_calls:
+                    tool_name = tc_info['function']['name']
+                    tool_call_id = tc_info['id']
+                    sandbox.register_call(tool_name)
+
+                    yield encode_status(f'Executing {tool_name}...')
+
+                    tool_result: object = {
+                        'error': f'Tool {tool_name} failed unexpectedly.',
+                        'tool_name': tool_name,
+                    }
+
+                    if tool_name not in allowed_tools:
+                        tool_result = {
+                            'error': f'Tool {tool_name} is not allowed for this request context.',
+                        }
+                        obs_logger.warning(
+                            'ai.tool_not_allowed',
+                            reason_code='TOOL_NOT_ALLOWED',
+                            details={'tool_name': tool_name},
+                        )
+                    elif sandbox.tool_is_rate_limited(tool_name):
+                        tool_result = {
+                            'error': f'Tool {tool_name} exceeded per-turn rate limit.',
+                        }
+                        obs_logger.warning(
+                            'ai.tool_rate_limited',
+                            reason_code='TOOL_RATE_LIMIT_EXCEEDED',
+                            details={'tool_name': tool_name},
+                        )
+                    else:
+                        try:
+                            arguments = json.loads(tc_info['function']['arguments'] or '{}')
+                            validated_args = self.validate_tool_arguments(tool_name, arguments)
+                            executor = TOOL_EXECUTOR_BY_NAME.get(tool_name)
+                            if executor is None:
+                                raise ValueError(f'Unsupported tool call: {tool_name}')
+                            with TimingContext(f'ai.tool_execution_{tool_name}'):
+                                tool_result = await sync_to_async(
+                                    executor,
+                                    thread_sensitive=True,
+                                )(validated_args, self._user_id)
+                            json.dumps(tool_result, default=str)
+                        except Exception as error:
+                            tool_result = {
+                                'error': str(error),
+                                'tool_name': tool_name,
+                            }
+                            obs_logger.error(
+                                'ai.tool_execution_failed',
+                                reason_code='TOOL_EXECUTION_ERROR',
+                                details={
+                                    'tool_name': tool_name,
+                                    'error_type': type(error).__name__,
+                                    'error_message': str(error)[:200],
+                                },
+                            )
+                            await create_audit_event_async(AuditEventData(
+                                event_type='TOOL_FAILURE',
+                                severity='ERROR',
+                                resource_type='tool',
+                                resource_id=tool_name,
+                                action='execution_failed',
+                                reason_code='TOOL_EXECUTION_ERROR',
+                            ))
+
+                    # Append tool result to messages for next round
+                    messages.append({
+                        'role': 'tool',
+                        'tool_call_id': tool_call_id,
+                        'content': json.dumps(tool_result, default=str),
+                    })
+
+                    # Emit structured UI event if tool is UI-mapped
+                    ui_kind = get_ui_kind(tool_name)
+                    if ui_kind and not (isinstance(tool_result, dict) and 'error' in tool_result):
+                        yield encode_tool_result(
+                            tool_name=tool_name,
+                            ui_kind=ui_kind,
+                            result=tool_result,
+                        )
+
+                self._audit_logger.log_turn_event(
+                    event='tool_round_completed',
+                    prompt=prompt,
+                    data={
+                        'model': self._model,
+                        'tool_names': [tc['function']['name'] for tc in assistant_tool_calls],
+                    },
+                )
+
+            # Exhausted all tool rounds
+            yield encode_text_delta(
+                'I could not finalize your request after multiple tool steps. '
+                'Please try again.'
+            )
+            yield encode_finish('max_rounds')
+
         except APIStatusError as error:
             reason_code = 'API_STATUS_ERROR'
             if getattr(error, 'status_code', None) == 402:
@@ -470,12 +712,12 @@ class OpenRouterAgent(BaseAgentInterface):
                     action='provider_credits_exhausted',
                     reason_code=reason_code,
                 ))
-                yield (
+                yield encode_error(
                     'I am temporarily unable to respond because the AI provider '
                     'account is out of credits. Please try again later.'
                 )
                 return
-            
+
             obs_logger.error(
                 'ai.stream_response.api_status_error',
                 reason_code=reason_code,
@@ -484,8 +726,7 @@ class OpenRouterAgent(BaseAgentInterface):
                     'error_type': type(error).__name__,
                 },
             )
-            yield 'I could not process your request right now. Please try again.'
-            return
+            yield encode_error('I could not process your request right now. Please try again.')
         except Exception as error:
             obs_logger.error(
                 'ai.stream_response.failed',
@@ -501,17 +742,4 @@ class OpenRouterAgent(BaseAgentInterface):
                 action='response_generation_failed',
                 reason_code='UNEXPECTED_ERROR',
             ))
-            yield 'I could not process your request right now. Please try again.'
-            return
-
-        message_blocks = [
-            block.strip()
-            for block in final_text.split(self.MESSAGE_BREAK_TOKEN)
-            if block.strip()
-        ]
-
-        if not message_blocks and final_text.strip():
-            message_blocks = [final_text.strip()]
-
-        for block in message_blocks:
-            yield block
+            yield encode_error('I could not process your request right now. Please try again.')

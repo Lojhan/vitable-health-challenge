@@ -194,6 +194,43 @@ describe('chat store', () => {
     )
   })
 
+  it('parses typed JSON SSE events for mixed text and structured responses', async () => {
+    const authStore = useAuthStore()
+    authStore.token = 'test-token'
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      headers: {
+        get() {
+          return null
+        },
+      },
+      body: buildStreamingBody([
+        'data: 0:"Here are your options:"\n\n',
+        'data: 9:{"tool_name":"list_providers","ui_kind":"providers","result":[{"provider_id":1,"name":"Dr. Lee","specialty":"General Practice"}]}\n\n',
+        'data: d:{"finish_reason":"stop"}\n\n',
+      ]),
+    })
+
+    const chatStore = useChatStore()
+    await chatStore.sendMessage('show providers')
+
+    const assistantMessages = chatStore.messages.filter(
+      (message) => message.role === 'assistant',
+    )
+    expect(assistantMessages).toHaveLength(2)
+    expect(assistantMessages[0].messageKind).toBe('text')
+    expect(assistantMessages[0].content).toBe('Here are your options:')
+    expect(assistantMessages[1].messageKind).toBe('providers')
+    expect(JSON.parse(assistantMessages[1].content)).toEqual([
+      {
+        provider_id: 1,
+        name: 'Dr. Lee',
+        specialty: 'General Practice',
+      },
+    ])
+  })
+
   it('retries chat request after access token refresh on 401', async () => {
     const authStore = useAuthStore()
     authStore.token = 'expired-token'

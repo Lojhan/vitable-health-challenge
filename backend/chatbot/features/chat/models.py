@@ -58,3 +58,25 @@ class ChatMessage(models.Model):
                 name='chat_user_request_id_unique_per_session',
             ),
         ]
+
+
+class StructuredInteraction(models.Model):
+    """Stores user selection state for structured UI components (provider picks, slot picks)."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='structured_interactions',
+    )
+    interaction_id = models.CharField(max_length=128)
+    kind = models.CharField(max_length=32)
+    selection = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'interaction_id'],
+                name='structured_interaction_user_unique',
+            ),
+        ]

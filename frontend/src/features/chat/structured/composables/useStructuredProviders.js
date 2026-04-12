@@ -1,11 +1,14 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import { useChatStore } from '../../../../stores/chat'
 import {
 	fetchProviderProfile,
 	fetchProviders,
+} from '../services/mockStructuredApi'
+import {
 	fetchStructuredInteractionState,
 	saveStructuredInteractionState,
-} from '../services/mockStructuredApi'
+} from '../services/structuredInteractionApi'
 
 export function useStructuredProviders(payload) {
 	const interactionId = computed(() => String(payload?.interactionId ?? '').trim())
@@ -140,10 +143,15 @@ export function useStructuredProviders(payload) {
 
 	onMounted(async () => {
 		setupViewportWatcher()
-		await Promise.all([
-			loadProviders('All'),
-			loadSavedSelection(),
-		])
+		const chatStore = useChatStore()
+		if (chatStore.isStreaming) {
+			await loadProviders('All')
+		} else {
+			await Promise.all([
+				loadProviders('All'),
+				loadSavedSelection(),
+			])
+		}
 	})
 
 	onBeforeUnmount(() => {

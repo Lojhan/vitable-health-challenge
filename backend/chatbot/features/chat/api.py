@@ -3,6 +3,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from uuid import uuid4
 
+from asgiref.sync import sync_to_async
 from django.http import StreamingHttpResponse
 from ninja import Router, Schema
 from ninja.responses import Status
@@ -16,7 +17,7 @@ from chatbot.features.chat.composition import (
     build_prepare_chat_turn_use_case,
     build_save_assistant_response_fn,
 )
-from chatbot.features.chat.sse import single_chunk_response, stream_async_generator
+from chatbot.features.chat.sse import single_chunk_response, stream_async_generator, stream_response_async
 from chatbot.features.core.api.validation import to_validation_status
 from chatbot.features.core.auth_context import get_authenticated_user
 from chatbot.features.core.domain.validation import DomainValidationError
@@ -129,9 +130,9 @@ def _serialize_chat_session(session: Any) -> dict[str, object]:
 
 
 @router.post('/chat', auth=JWTAuth())
-def post_chat(request: Any, payload: ChatRequestSchema) -> StreamingHttpResponse | Status:
+async def post_chat(request: Any, payload: ChatRequestSchema) -> StreamingHttpResponse | Status:
     request_id = payload.request_id or str(uuid4())
-    user = get_authenticated_user(request)
+    user = await sync_to_async(get_authenticated_user, thread_sensitive=True)(request)
     prepared_turn: Any | None = None
     agent: Any | None = None
     
@@ -141,9 +142,12 @@ def post_chat(request: Any, payload: ChatRequestSchema) -> StreamingHttpResponse
     
     try:
         with TimingContext('chat.turn.preparation'):
-            prepared_turn = build_prepare_chat_turn_use_case(
-                debounce_window_seconds=CHAT_DEBOUNCE_WINDOW_SECONDS,
-            ).execute(
+            prepared_turn = await sync_to_async(
+                build_prepare_chat_turn_use_case(
+                    debounce_window_seconds=CHAT_DEBOUNCE_WINDOW_SECONDS,
+                ).execute,
+                thread_sensitive=True,
+            )(
                 user=user,
                 message=payload.message,
                 session_id=payload.session_id,
@@ -200,7 +204,7 @@ def post_chat(request: Any, payload: ChatRequestSchema) -> StreamingHttpResponse
     save_assistant_message = build_save_assistant_response_fn(session=prepared_turn.session)
 
     response = StreamingHttpResponse(
-        stream_async_generator(
+        stream_response_async(
             agent.stream_response(
                 cast(str, prepared_turn.prompt_for_agent),
                 history=prepared_turn.history,
@@ -212,6 +216,8 @@ def post_chat(request: Any, payload: ChatRequestSchema) -> StreamingHttpResponse
     )
     response['X-Chat-Session-Id'] = str(_model_pk(prepared_turn.session))
     response['X-Request-Id'] = request_id
+    response['Cache-Control'] = 'no-cache, no-transform'
+    response['X-Accel-Buffering'] = 'no'
 
     return response
 
@@ -241,3 +247,77 @@ def delete_chat_session(request: Any, session_id: int) -> dict[str, bool]:
     )
 
     return {'deleted': deleted}
+
+
+# ── Structured interaction selection persistence ──────────────────────────────
+
+class StructuredInteractionSaveSchema(Schema):
+    interaction_id: str
+    kind: str
+    selection: dict[str, Any]
+
+
+class StructuredInteractionResponseSchema(Schema):
+    interaction_id: str
+    selection: dict[str, Any] | None
+
+
+@router.get(
+    '/chat/structured-interactions/{interaction_id}',
+    auth=JWTAuth(),
+    response=StructuredInteractionResponseSchema,
+)
+def get_structured_interaction(request: Any, interaction_id: str) -> dict[str, object]:
+    from chatbot.features.chat.models import StructuredInteraction
+
+    user = get_authenticated_user(request)
+    normalized_id = interaction_id.strip()
+    if not normalized_id:
+        return {'interaction_id': '', 'selection': None}
+
+    row = StructuredInteraction.objects.filter(
+        user_id=cast(int, user.id),
+        interaction_id=normalized_id,
+    ).first()
+
+    return {
+        'interaction_id': normalized_id,
+        'selection': row.selection if row else None,
+    }
+
+
+@router.post(
+    '/chat/structured-interactions',
+    auth=JWTAuth(),
+    response=StructuredInteractionResponseSchema,
+)
+def save_structured_interaction(
+    request: Any,
+    payload: StructuredInteractionSaveSchema,
+) -> dict[str, object]:
+    from chatbot.features.chat.models import StructuredInteraction
+
+    user = get_authenticated_user(request)
+    normalized_id = payload.interaction_id.strip()
+    if not normalized_id or not payload.selection:
+        return {'interaction_id': normalized_id, 'selection': None}
+
+    selection_data = {
+        'kind': payload.kind,
+        **payload.selection,
+        'saved_at': __import__('django').utils.timezone.now().isoformat(),
+    }
+
+    row, created = StructuredInteraction.objects.update_or_create(
+        user_id=cast(int, user.id),
+        interaction_id=normalized_id,
+        defaults={
+            'kind': payload.kind,
+            'selection': selection_data,
+        },
+    )
+
+    return {
+        'interaction_id': normalized_id,
+        'selection': row.selection,
+    }

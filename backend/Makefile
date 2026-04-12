@@ -17,7 +17,7 @@ endif
 .DEFAULT_GOAL := help
 
 
-.PHONY: help install run dev shell check migrate makemigrations createsuperuser \
+.PHONY: help install run run-asgi dev shell check migrate makemigrations createsuperuser \
 	test test-file test-k test-v test-fast lint format typecheck quality docker-up docker-down \
 	pg-up pg-down pg-logs pg-psql pg-create-db
 
@@ -25,8 +25,9 @@ help:
 	@echo "Backend commands"
 	@echo ""
 	@echo "  make install         Install backend dependencies"
-	@echo "  make run             Run Django dev server on 0.0.0.0:8000"
-	@echo "  make dev             Alias for run"
+	@echo "  make run             Run Django dev server on 0.0.0.0:8000 (WSGI, no SSE streaming)"
+	@echo "  make run-asgi        Run Uvicorn ASGI server on 0.0.0.0:8000 (required for SSE streaming)"
+	@echo "  make dev             Alias for run-asgi"
 	@echo "  make shell           Open Django shell"
 	@echo "  make check           Run Django system checks"
 	@echo "  make migrate         Apply database migrations"
@@ -55,7 +56,10 @@ install:
 run:
 	$(MANAGE) runserver 0.0.0.0:8000
 
-dev: run
+run-asgi:
+	$(PYTHON) -m uvicorn backend.asgi:application --host 0.0.0.0 --port 8000 --reload
+
+dev: run-asgi
 
 shell:
 	$(MANAGE) shell

@@ -4,6 +4,20 @@ import { describe, expect, it, vi } from 'vitest'
 
 import ChatStructuredSection from '../ChatStructuredSection.vue'
 
+const _interactionStore = new Map()
+
+vi.mock('../../../chat/structured/services/structuredInteractionApi', () => ({
+	fetchStructuredInteractionState: vi.fn(async (id) => ({
+		interaction_id: id ?? '',
+		selection: _interactionStore.get(id) ?? null,
+	})),
+	saveStructuredInteractionState: vi.fn(async (params) => {
+		const sel = params?.selection ? { kind: params.kind, ...params.selection, saved_at: new Date().toISOString() } : null
+		if (sel) _interactionStore.set(params.interactionId, sel)
+		return { interaction_id: params?.interactionId ?? '', selection: sel }
+	}),
+}))
+
 describe('ChatStructuredSection', () => {
 	it('renders provider explorer and emits quick reply after selecting provider in details view', async () => {
 		vi.useFakeTimers()

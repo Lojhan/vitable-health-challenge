@@ -1,11 +1,14 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import { useChatStore } from '../../../../stores/chat'
 import {
 	fetchAvailabilityCalendar,
 	fetchAvailabilityDaySlots,
+} from '../services/mockStructuredApi'
+import {
 	fetchStructuredInteractionState,
 	saveStructuredInteractionState,
-} from '../services/mockStructuredApi'
+} from '../services/structuredInteractionApi'
 
 function getMonthStartIso(date = new Date()) {
 	const year = date.getFullYear()
@@ -419,10 +422,13 @@ export function useStructuredAvailability(payload) {
 
 	onMounted(async () => {
 		setupViewportWatcher()
-		await loadSavedSelection()
+		const chatStore = useChatStore()
+		if (!chatStore.isStreaming) {
+			await loadSavedSelection()
 
-		if (selectedSlotSelection.value?.day_iso_utc) {
-			await hydrateSavedSelectionIntoCalendar()
+			if (selectedSlotSelection.value?.day_iso_utc) {
+				await hydrateSavedSelectionIntoCalendar()
+			}
 		}
 	})
 

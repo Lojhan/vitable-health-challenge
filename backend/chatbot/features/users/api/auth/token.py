@@ -108,6 +108,8 @@ def obtain_token(request: Any, payload: TokenRequestSchema) -> Status | dict[str
 def refresh_token(request: Any, payload: RefreshRequestSchema) -> Status | dict[str, str]:
     use_case = build_refresh_token_use_case()
     try:
+        logger.debug('Attempting to refresh access token with provided refresh token')
+        logger.debug(f'Refresh token payload: {payload.refresh}')
         result = use_case.execute(refresh_token_str=payload.refresh)
         return {'access': result.access, 'refresh': result.refresh}
     except InvalidRefreshTokenError:

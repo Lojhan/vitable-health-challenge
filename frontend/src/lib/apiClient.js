@@ -47,9 +47,20 @@ export function setupAuthFailureInterceptor(onUnauthorized) {
     (response) => response,
     async (error) => {
       const status = error.response?.status
-      if (status === 401 && typeof onUnauthorized === 'function') {
-        await onUnauthorized()
+      const originalConfig = error.config
+
+      if (
+        status === 401 &&
+        typeof onUnauthorized === 'function' &&
+        !originalConfig?._retry
+      ) {
+        originalConfig._retry = true
+        const refreshed = await onUnauthorized()
+        if (refreshed) {
+          return apiClient(originalConfig)
+        }
       }
+
       return Promise.reject(error)
     },
   )

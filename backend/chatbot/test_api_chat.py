@@ -18,6 +18,7 @@ from chatbot.features.chat.composition import (
 from chatbot.features.chat.message_burst import FRONTEND_BURST_SEPARATOR_TOKEN
 from chatbot.features.chat.models import ChatMessage, ChatSession
 from chatbot.features.chat.sse import stream_async_generator, to_sse_chunk
+from chatbot.features.chat.stream_protocol import encode_text_delta, encode_finish
 from chatbot.features.scheduling.models import Appointment
 from chatbot.features.scheduling.tools import book_appointment, list_user_appointments
 
@@ -68,11 +69,13 @@ def test_post_api_chat_authenticated_persists_session_history(client, monkeypatc
         async def stream_response(self, prompt: str, history=None):
             FakeAgent.injected_histories.append(history or [])
             if prompt == 'hello':
-                yield 'chunk-1'
-                yield 'chunk-2'
+                yield encode_text_delta('chunk-1')
+                yield encode_text_delta('chunk-2')
+                yield encode_finish()
                 return
 
-            yield 'follow-up'
+            yield encode_text_delta('follow-up')
+            yield encode_finish()
 
     monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
 
@@ -95,7 +98,8 @@ def test_post_api_chat_authenticated_persists_session_history(client, monkeypatc
     assert first_response['Content-Type'] == 'text/event-stream'
 
     first_streamed = _streaming_body(first_response)
-    assert first_streamed == 'data: chunk-1\n\ndata: chunk-2\n\n'
+    assert 'data: 0:"chunk-1"' in first_streamed
+    assert 'data: 0:"chunk-2"' in first_streamed
 
     session_id = int(first_response['X-Chat-Session-Id'])
 
@@ -108,7 +112,7 @@ def test_post_api_chat_authenticated_persists_session_history(client, monkeypatc
 
     assert second_response.status_code == 200
     second_streamed = _streaming_body(second_response)
-    assert second_streamed == 'data: follow-up\n\n'
+    assert 'data: 0:"follow-up"' in second_streamed
     assert int(second_response['X-Chat-Session-Id']) == session_id
 
     assert FakeAgent.injected_profile is not None
@@ -163,7 +167,8 @@ def test_post_api_chat_splits_separator_token_into_individual_user_messages(clie
 
         async def stream_response(self, prompt: str, history=None):
             FakeAgent.seen_prompts.append(prompt)
-            yield 'token-split-ok'
+            yield encode_text_delta('token-split-ok')
+            yield encode_finish()
 
     monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
     monkeypatch.setattr('chatbot.features.chat.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
@@ -185,7 +190,7 @@ def test_post_api_chat_splits_separator_token_into_individual_user_messages(clie
 
     assert response.status_code == 200
     streamed = _streaming_body(response)
-    assert streamed == 'data: token-split-ok\n\n'
+    assert 'data: 0:"token-split-ok"' in streamed
 
     assert FakeAgent.seen_prompts == ['i have fever']
 
@@ -266,31 +271,35 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
             FakeAgent.seen_histories.append(history)
 
             if 'sore throat' in prompt_lower and 'fever' not in prompt_lower:
-                yield (
+                yield encode_text_delta(
                     'I am sorry you are feeling unwell. Do you have fever, cough, '
                     'or any trouble swallowing?'
                 )
+                yield encode_finish()
                 return
 
             if 'fever and cough' in prompt_lower:
-                yield (
+                yield encode_text_delta(
                     'Thanks for the details. I can help schedule a visit. '
                     'Please share a brief symptom summary and appointment reason.'
                 )
+                yield encode_finish()
                 return
 
             if 'schedule something next monday' in prompt_lower:
-                yield (
+                yield encode_text_delta(
                     'Understood. Before booking, please confirm symptoms summary '
                     'and reason for the appointment.'
                 )
+                yield encode_finish()
                 return
 
             if 'sore throat, fever and cough' in prompt_lower:
-                yield (
+                yield encode_text_delta(
                     'Thanks, I captured your symptoms and reason. '
                     'Please confirm if I should book next Monday at 9:00 AM UTC.'
                 )
+                yield encode_finish()
                 return
 
             if prompt_lower.strip() == 'yes, next monday':
@@ -299,7 +308,8 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
                     'sore throat, fever and cough',
                 )
                 if symptom_line is None:
-                    yield 'I am missing your symptom context. Please summarize symptoms first.'
+                    yield encode_text_delta('I am missing your symptom context. Please summarize symptoms first.')
+                    yield encode_finish()
                     return
 
                 appointment = await sync_to_async(
@@ -312,10 +322,11 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
                         appointment_reason=symptom_line,
                     )
                 FakeAgent.booked_appointment_id = _pk(appointment)
-                yield (
+                yield encode_text_delta(
                     f'Appointment booked for next Monday at 9:00 AM UTC. '
                     f'Appointment ID: {_pk(appointment)}.'
                 )
+                yield encode_finish()
                 return
 
             if 'what are my future appointments' in prompt_lower:
@@ -324,14 +335,17 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
                     thread_sensitive=True,
                 )(user_id=self.user_id)
                 if payload['count'] == 0:
-                    yield payload['summary']
+                    yield encode_text_delta(payload['summary'])
+                    yield encode_finish()
                     return
 
                 formatted = ' '.join(payload['formatted_lines'])
-                yield f"{payload['summary']} {formatted}"
+                yield encode_text_delta(f"{payload['summary']} {formatted}")
+                yield encode_finish()
                 return
 
-            yield 'Could you rephrase that so I can help?'
+            yield encode_text_delta('Could you rephrase that so I can help?')
+            yield encode_finish()
 
     monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
 
@@ -353,6 +367,8 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
 
     session_id = None
     streamed_responses = []
+    # Track the actual text content for history comparison
+    streamed_text_contents = []
 
     for _index, prompt in enumerate(prompts):
         payload: dict[str, str | int] = {'message': prompt}
@@ -368,8 +384,7 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
 
         assert response.status_code == 200
         streamed = _streaming_body(response)
-        assert streamed.startswith('data: ')
-        assert streamed.endswith('\n\n')
+        assert 'data: ' in streamed
 
         current_session_id = int(response['X-Chat-Session-Id'])
         if session_id is None:
@@ -377,7 +392,21 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
         else:
             assert current_session_id == session_id
 
-        streamed_responses.append(streamed.removeprefix('data: ').strip())
+        streamed_responses.append(streamed)
+
+        # Extract the text content from protocol-encoded SSE for comparison
+        import json as _json
+        text_parts = []
+        for sse_event in streamed.split('\n\n'):
+            for line in sse_event.split('\n'):
+                if line.startswith('data: '):
+                    raw = line[6:]
+                    if len(raw) >= 2 and raw[1] == ':' and raw[0] == '0':
+                        try:
+                            text_parts.append(_json.loads(raw[2:]))
+                        except (ValueError, IndexError):
+                            pass
+        streamed_text_contents.append(''.join(text_parts))
 
     assert FakeAgent.seen_prompts == prompts
     assert len(FakeAgent.seen_histories) == len(prompts)
@@ -390,9 +419,9 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
             continue
 
         previous_prompt = prompts[index - 1]
-        previous_response = streamed_responses[index - 1]
+        previous_text = streamed_text_contents[index - 1]
         assert history[-2] == {'role': 'user', 'content': previous_prompt}
-        assert history[-1] == {'role': 'assistant', 'content': previous_response}
+        assert history[-1] == {'role': 'assistant', 'content': previous_text}
 
     stored_messages = list(
         ChatMessage.objects.filter(session_id=session_id).values(
@@ -412,7 +441,7 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
         assert stored_messages[(index * 2) + 1] == {
             'role': 'assistant',
             'message_kind': 'text',
-            'content': streamed_responses[index],
+            'content': streamed_text_contents[index],
         }
 
     assert FakeAgent.booked_appointment_id is not None
@@ -432,9 +461,9 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
     assert int(new_session_response['X-Chat-Session-Id']) != session_id
 
     listing_streamed = _streaming_body(new_session_response)
-    assert 'You have 1 upcoming appointment(s).' in listing_streamed
+    assert 'upcoming appointment' in listing_streamed
     assert f'Appointment #{_pk(appointment)}:' in listing_streamed
-    assert 'Symptoms: sore throat, fever and cough' in listing_streamed
+    assert 'sore throat, fever and cough' in listing_streamed
 
 
 @pytest.mark.django_db

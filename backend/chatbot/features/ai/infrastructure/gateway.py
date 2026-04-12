@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from time import monotonic
 from typing import Any, Protocol, cast
 from uuid import uuid4
@@ -19,6 +20,15 @@ class LlmGateway(Protocol):
         tools: list[dict],
         max_tokens: int,
     ) -> object: ...
+
+    async def create_streaming_chat_completion(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, object]],
+        tools: list[dict],
+        max_tokens: int,
+    ) -> AsyncIterator[object]: ...
 
 
 class OpenRouterChatGateway:
@@ -39,6 +49,24 @@ class OpenRouterChatGateway:
             tools=cast(Any, tools),
             max_tokens=max_tokens,
         )
+
+    async def create_streaming_chat_completion(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, object]],
+        tools: list[dict],
+        max_tokens: int,
+    ) -> AsyncIterator[object]:
+        stream = await self._client.chat.completions.create(
+            model=model,
+            messages=cast(Any, messages),
+            tools=cast(Any, tools),
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        async for chunk in stream:
+            yield chunk
 
 
 class GatewayCircuitBreaker:
@@ -124,6 +152,49 @@ class ResilientGateway:
                     )
                     if attempt >= self._max_retries or not self._is_retryable(error):
                         break
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError('No available model gateway')
+
+    async def create_streaming_chat_completion(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, object]],
+        tools: list[dict],
+        max_tokens: int,
+    ) -> AsyncIterator[object]:
+        last_error: Exception | None = None
+
+        for gateway, breaker in zip(self._gateways, self._breakers, strict=False):
+            if not breaker.can_execute():
+                continue
+
+            correlation_id = str(uuid4())
+            try:
+                async for chunk in gateway.create_streaming_chat_completion(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                ):
+                    yield chunk
+                breaker.record_success()
+                return
+            except Exception as error:
+                last_error = error
+                breaker.record_failure()
+                logger.warning(
+                    'ai.gateway.streaming_call_failed',
+                    extra={
+                        'correlation_id': correlation_id,
+                        'error_type': type(error).__name__,
+                    },
+                    exc_info=True,
+                )
+                if not self._is_retryable(error):
+                    break
 
         if last_error is not None:
             raise last_error

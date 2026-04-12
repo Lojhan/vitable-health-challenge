@@ -33,7 +33,7 @@ export const useAuthStore = defineStore('auth', () => {
 
 	setupAuthInterceptor(() => token.value)
 	setupAuthFailureInterceptor(async () => {
-		logout()
+		await refreshAccessToken()
 	})
 
 	const isAuthenticated = computed(() => Boolean(token.value))

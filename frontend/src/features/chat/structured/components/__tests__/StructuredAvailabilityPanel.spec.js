@@ -4,6 +4,24 @@ import { describe, expect, it, vi } from 'vitest'
 
 import StructuredAvailabilityPanel from '../StructuredAvailabilityPanel.vue'
 
+const _interactionStore = new Map()
+
+vi.mock('../../../../../stores/chat', () => ({
+	useChatStore: () => ({ isStreaming: false }),
+}))
+
+vi.mock('../../services/structuredInteractionApi', () => ({
+	fetchStructuredInteractionState: vi.fn(async (id) => ({
+		interaction_id: id ?? '',
+		selection: _interactionStore.get(id) ?? null,
+	})),
+	saveStructuredInteractionState: vi.fn(async (params) => {
+		const sel = params?.selection ? { kind: params.kind, ...params.selection, saved_at: new Date().toISOString() } : null
+		if (sel) _interactionStore.set(params.interactionId, sel)
+		return { interaction_id: params?.interactionId ?? '', selection: sel }
+	}),
+}))
+
 describe('StructuredAvailabilityPanel', () => {
 	it('renders interactive calendar and emits quick reply on slot selection', async () => {
 		vi.useFakeTimers({ now: new Date('2026-04-10T12:00:00.000Z') })
