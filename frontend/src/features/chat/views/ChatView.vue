@@ -26,7 +26,6 @@ const {
   toggleHeaderMenu,
   handleNewConversation,
   handleClearChat,
-  handleLoadActivityPreview,
   handleStructuredQuickReply,
   handleSelectConversation,
   formatConversationDate,
@@ -112,14 +111,6 @@ const {
                   @click="handleNewConversation"
                 >
                   Start new conversation
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
-                  @click="handleLoadActivityPreview"
-                >
-                  Load agent activity preview
                 </button>
                 <button
                   type="button"

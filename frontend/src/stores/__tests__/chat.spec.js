@@ -349,26 +349,6 @@ describe('chat store', () => {
     expect(chatStore.messages.some((message) => message.content.includes('knee'))).toBe(true)
   })
 
-  it('loads mocked agent activity preview data', () => {
-    const chatStore = useChatStore()
-
-    chatStore.loadMockActivityPreview()
-
-    expect(chatStore.conversationSummaries[0]?.title).toBe('Agent activity preview')
-    expect(chatStore.messages[0]?.content).toContain('Dr. Sarah Chen next week')
-    expect(chatStore.messages[1]?.messageKind).toBe('availability')
-    expect(JSON.parse(chatStore.messages[1]?.content)).toMatchObject({
-      type: 'availability',
-      ui_state: 'partial',
-      progress_message: 'Checking appointment availability',
-    })
-    expect(chatStore.streamActivities).toHaveLength(3)
-    expect(chatStore.streamActivities.at(-1)).toMatchObject({
-      toolName: 'check_availability',
-      state: 'active',
-    })
-  })
-
   it('switches to a selected past conversation and restores its session id', async () => {
     const authStore = useAuthStore()
     authStore.token = 'test-token'

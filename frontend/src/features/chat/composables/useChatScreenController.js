@@ -80,13 +80,6 @@ export function useChatScreenController({ authStore, chatStore }) {
 		headerMenuOpen.value = false
 	}
 
-	function handleLoadActivityPreview() {
-		chatStore.loadMockActivityPreview()
-		inputMessage.value = ''
-		headerMenuOpen.value = false
-		closeSidebar()
-	}
-
 	function handleSelectConversation(conversationId) {
 		chatStore.selectConversation(conversationId)
 		closeSidebar()
@@ -153,7 +146,6 @@ export function useChatScreenController({ authStore, chatStore }) {
 		toggleHeaderMenu,
 		handleNewConversation,
 		handleClearChat,
-		handleLoadActivityPreview,
 		handleSelectConversation,
 		formatConversationDate,
 	}

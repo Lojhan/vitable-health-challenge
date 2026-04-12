@@ -852,71 +852,6 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  function loadMockActivityPreview() {
-    const now = buildMockIsoTimestamp()
-    const previewConversation = {
-      id: buildConversationId(),
-      title: 'Agent activity preview',
-      createdAt: now,
-      updatedAt: now,
-      sessionId: null,
-      messages: [
-        {
-          id: buildMessageId(),
-          role: 'user',
-          messageKind: 'text',
-          content: 'Find me an appointment with Dr. Sarah Chen next week.',
-        },
-        {
-          id: buildMessageId(),
-          role: 'assistant',
-          messageKind: 'availability',
-          streamKey: 'mock-availability-preview',
-          content: JSON.stringify({
-            type: 'availability',
-            interaction_id: 'mock-availability-preview',
-            ui_state: 'partial',
-            progress_message: 'Checking appointment availability',
-            available_slots_utc: [],
-          }),
-        },
-      ],
-    }
-
-    conversations.value.unshift(previewConversation)
-    activeConversationId.value = previewConversation.id
-    messages.value = previewConversation.messages
-    sessionId.value = null
-    streamError.value = ''
-    emergencyOverride.value = false
-    streamActivities.value = [
-      {
-        id: buildStreamActivityId(),
-        toolCallId: 'mock-provider-search',
-        toolName: 'show_providers_for_selection',
-        label: 'Reviewing provider options',
-        phase: 'completed',
-        state: 'completed',
-      },
-      {
-        id: buildStreamActivityId(),
-        toolCallId: 'mock-date-window',
-        toolName: 'resolve_datetime_reference',
-        label: 'Normalizing the requested time window',
-        phase: 'completed',
-        state: 'completed',
-      },
-      {
-        id: buildStreamActivityId(),
-        toolCallId: 'mock-availability-preview',
-        toolName: 'check_availability',
-        label: 'Checking appointment availability',
-        phase: 'running',
-        state: 'active',
-      },
-    ]
-  }
-
   return {
     messages,
     conversations,
@@ -931,7 +866,6 @@ export const useChatStore = defineStore('chat', () => {
     sendMessage,
     synchronizeHistoryOnStartup,
     startNewConversation,
-    loadMockActivityPreview,
     selectConversation,
     clearChat,
     resetEmergencyState,

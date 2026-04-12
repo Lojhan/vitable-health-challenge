@@ -19,7 +19,6 @@ const chatStore = reactive({
 	sendMessage: vi.fn(async () => {}),
 	startNewConversation: vi.fn(),
 	clearChat: vi.fn(),
-	loadMockActivityPreview: vi.fn(),
 	selectConversation: vi.fn(),
 	resetEmergencyState: vi.fn(),
 })
@@ -89,7 +88,6 @@ describe('ChatView', () => {
 		chatStore.sendMessage.mockClear()
 		chatStore.startNewConversation.mockClear()
 		chatStore.clearChat.mockClear()
-		chatStore.loadMockActivityPreview.mockClear()
 		chatStore.selectConversation.mockClear()
 		chatStore.resetEmergencyState.mockClear()
 	})
