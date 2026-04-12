@@ -11,7 +11,13 @@ from chatbot.features.chat.application.use_cases.get_chat_history import (
 from chatbot.features.chat.application.use_cases.get_chat_history_sync import (
     GetChatHistorySyncUseCase,
 )
+from chatbot.features.chat.application.use_cases.get_structured_interaction import (
+    GetStructuredInteractionUseCase,
+)
 from chatbot.features.chat.application.use_cases.prepare_chat_turn import PrepareChatTurnUseCase
+from chatbot.features.chat.application.use_cases.save_structured_interaction import (
+    SaveStructuredInteractionUseCase,
+)
 from chatbot.features.chat.models import ChatMessage
 from chatbot.features.chat.infrastructure.unit_of_work.django_chat import DjangoChatUnitOfWork
 from chatbot.features.chat.stream_protocol import (
@@ -44,6 +50,14 @@ def build_get_chat_history_use_case(
 
 def build_get_chat_history_sync_use_case() -> GetChatHistorySyncUseCase:
     return GetChatHistorySyncUseCase(uow=DjangoChatUnitOfWork())
+
+
+def build_get_structured_interaction_use_case() -> GetStructuredInteractionUseCase:
+    return GetStructuredInteractionUseCase(uow=DjangoChatUnitOfWork())
+
+
+def build_save_structured_interaction_use_case() -> SaveStructuredInteractionUseCase:
+    return SaveStructuredInteractionUseCase(uow=DjangoChatUnitOfWork())
 
 
 def build_save_assistant_response_fn(

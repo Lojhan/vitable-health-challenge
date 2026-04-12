@@ -7,15 +7,23 @@ from chatbot.features.chat.application.use_cases.get_chat_history import (
 from chatbot.features.chat.application.use_cases.get_chat_history_sync import (
     GetChatHistorySyncUseCase,
 )
+from chatbot.features.chat.application.use_cases.get_structured_interaction import (
+    GetStructuredInteractionUseCase,
+)
 from chatbot.features.chat.application.use_cases.prepare_chat_turn import (
     PrepareChatTurnUseCase,
     PreparedChatTurn,
+)
+from chatbot.features.chat.application.use_cases.save_structured_interaction import (
+    SaveStructuredInteractionUseCase,
 )
 
 __all__ = [
     'DeleteChatSessionUseCase',
     'GetChatHistorySyncUseCase',
     'GetChatHistoryUseCase',
+    'GetStructuredInteractionUseCase',
     'PrepareChatTurnUseCase',
     'PreparedChatTurn',
+    'SaveStructuredInteractionUseCase',
 ]

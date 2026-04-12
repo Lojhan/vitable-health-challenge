@@ -431,7 +431,7 @@ def test_cross_feature_imports_are_allowed_only_for_ai_or_explicit_contracts():
         'chatbot/features/billing/tools.py': {
             'chatbot.features.ai.tooling',
         },
-        'chatbot/features/chat/api.py': {
+            'chatbot/features/chat/api/post_chat.py': {
             'chatbot.features.ai.composition',
         },
         'chatbot/features/scheduling/tools.py': {

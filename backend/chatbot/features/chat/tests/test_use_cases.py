@@ -5,11 +5,13 @@ from django.contrib.auth import get_user_model
 
 from chatbot.features.chat.application.use_cases import (
     DeleteChatSessionUseCase,
+    GetStructuredInteractionUseCase,
     PrepareChatTurnUseCase,
+    SaveStructuredInteractionUseCase,
 )
 from chatbot.features.chat.application.use_cases.prepare_chat_turn import _ROLE_USER
 from chatbot.features.chat.infrastructure.unit_of_work.django_chat import DjangoChatUnitOfWork
-from chatbot.features.chat.models import ChatMessage, ChatSession
+from chatbot.features.chat.models import ChatMessage, ChatSession, StructuredInteraction
 
 
 @pytest.mark.django_db
@@ -156,3 +158,61 @@ def test_chat_message_defaults_to_text_message_kind():
     )
 
     assert message.message_kind == ChatMessage.MessageKind.TEXT
+
+
+@pytest.mark.django_db
+def test_get_structured_interaction_use_case_returns_empty_payload_for_blank_id():
+    use_case = GetStructuredInteractionUseCase(uow=DjangoChatUnitOfWork())
+
+    result = use_case.execute(user_id=123, interaction_id='   ')
+
+    assert result == {'interaction_id': '', 'selection': None}
+
+
+@pytest.mark.django_db
+def test_save_structured_interaction_use_case_skips_empty_selection():
+    use_case = SaveStructuredInteractionUseCase(uow=DjangoChatUnitOfWork())
+
+    result = use_case.execute(
+        user_id=123,
+        interaction_id='interaction-1',
+        kind='providers',
+        selection={},
+    )
+
+    assert result == {'interaction_id': 'interaction-1', 'selection': None}
+    assert StructuredInteraction.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_save_and_get_structured_interaction_use_cases_round_trip_selection():
+    user_model = get_user_model()
+    user = user_model.objects.create_user(
+        username='chat-structured-user',
+        password='safe-password-123',
+        first_name='Casey',
+        insurance_tier='Silver',
+        medical_history={},
+    )
+
+    save_use_case = SaveStructuredInteractionUseCase(uow=DjangoChatUnitOfWork())
+    get_use_case = GetStructuredInteractionUseCase(uow=DjangoChatUnitOfWork())
+
+    saved = save_use_case.execute(
+        user_id=user.id,
+        interaction_id=' interaction-123 ',
+        kind='providers',
+        selection={'provider_id': 'provider-7'},
+    )
+
+    fetched = get_use_case.execute(
+        user_id=user.id,
+        interaction_id='interaction-123',
+    )
+
+    assert saved['interaction_id'] == 'interaction-123'
+    assert saved['selection'] is not None
+    assert saved['selection']['kind'] == 'providers'
+    assert saved['selection']['provider_id'] == 'provider-7'
+    assert isinstance(saved['selection']['saved_at'], str)
+    assert fetched == saved

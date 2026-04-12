@@ -16,7 +16,7 @@ from chatbot.features.chat.composition import (
     build_get_chat_history_use_case,
 )
 from chatbot.features.chat.message_burst import FRONTEND_BURST_SEPARATOR_TOKEN
-from chatbot.features.chat.models import ChatMessage, ChatSession
+from chatbot.features.chat.models import ChatMessage, ChatSession, StructuredInteraction
 from chatbot.features.chat.sse import stream_async_generator, to_sse_chunk
 from chatbot.features.chat.stream_protocol import encode_text_delta, encode_finish
 from chatbot.features.scheduling.models import Appointment
@@ -32,7 +32,16 @@ def _user_id(appointment: Appointment) -> int:
 
 
 def _streaming_body(response: StreamingHttpResponse) -> str:
-    return b''.join(cast(Iterable[bytes], response.streaming_content)).decode()
+    content = response.streaming_content
+    if hasattr(content, '__aiter__'):
+        import asyncio
+        async def _collect() -> bytes:
+            chunks = []
+            async for chunk in content:
+                chunks.append(chunk)
+            return b''.join(chunks)
+        return asyncio.run(_collect()).decode()
+    return b''.join(cast(Iterable[bytes], content)).decode()
 
 
 @pytest.mark.django_db
@@ -77,7 +86,7 @@ def test_post_api_chat_authenticated_persists_session_history(client, monkeypatc
             yield encode_text_delta('follow-up')
             yield encode_finish()
 
-    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.post_chat.OpenRouterAgent', FakeAgent)
 
     token_response = client.post(
         '/api/auth/token',
@@ -170,8 +179,8 @@ def test_post_api_chat_splits_separator_token_into_individual_user_messages(clie
             yield encode_text_delta('token-split-ok')
             yield encode_finish()
 
-    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
-    monkeypatch.setattr('chatbot.features.chat.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
+    monkeypatch.setattr('chatbot.features.chat.api.post_chat.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.post_chat.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
 
     token_response = client.post(
         '/api/auth/token',
@@ -235,6 +244,94 @@ def test_stream_async_generator_runs_on_close_callback_and_collects_chunks():
     assert streamed == 'data: hello\n\n'
     assert close_called is True
     assert collected_chunks == ['hello']
+
+
+@pytest.mark.django_db
+def test_structured_interaction_endpoints_round_trip_for_authenticated_user(client):
+    user_model = get_user_model()
+    user = user_model.objects.create_user(
+        username='structured-api-user',
+        password='safe-password-123',
+        first_name='Jordan',
+        insurance_tier='Silver',
+        medical_history={},
+    )
+
+    token_response = client.post(
+        '/api/auth/token',
+        data={'username': user.username, 'password': 'safe-password-123'},
+        content_type='application/json',
+    )
+    access = token_response.json()['access']
+
+    save_response = client.post(
+        '/api/chat/structured-interactions',
+        data={
+            'interaction_id': ' providers-1 ',
+            'kind': 'providers',
+            'selection': {'provider_id': 'provider-42'},
+        },
+        content_type='application/json',
+        HTTP_AUTHORIZATION=f'Bearer {access}',
+    )
+
+    assert save_response.status_code == 200
+    save_payload = save_response.json()
+    assert save_payload['interaction_id'] == 'providers-1'
+    assert save_payload['selection']['kind'] == 'providers'
+    assert save_payload['selection']['provider_id'] == 'provider-42'
+    assert isinstance(save_payload['selection']['saved_at'], str)
+
+    get_response = client.get(
+        '/api/chat/structured-interactions/providers-1',
+        HTTP_AUTHORIZATION=f'Bearer {access}',
+    )
+
+    assert get_response.status_code == 200
+    assert get_response.json() == save_payload
+
+
+@pytest.mark.django_db
+def test_structured_interaction_get_is_scoped_to_authenticated_user(client):
+    user_model = get_user_model()
+    owner = user_model.objects.create_user(
+        username='structured-owner',
+        password='safe-password-123',
+        first_name='Owner',
+        insurance_tier='Silver',
+        medical_history={},
+    )
+    outsider = user_model.objects.create_user(
+        username='structured-outsider',
+        password='safe-password-123',
+        first_name='Outsider',
+        insurance_tier='Bronze',
+        medical_history={},
+    )
+    StructuredInteraction.objects.create(
+        user=owner,
+        interaction_id='availability-1',
+        kind='availability',
+        selection={'kind': 'availability', 'slot': '09:00'},
+    )
+
+    token_response = client.post(
+        '/api/auth/token',
+        data={'username': outsider.username, 'password': 'safe-password-123'},
+        content_type='application/json',
+    )
+    access = token_response.json()['access']
+
+    response = client.get(
+        '/api/chat/structured-interactions/availability-1',
+        HTTP_AUTHORIZATION=f'Bearer {access}',
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        'interaction_id': 'availability-1',
+        'selection': None,
+    }
 
 
 @pytest.mark.django_db(transaction=True)
@@ -347,7 +444,7 @@ def test_post_api_chat_long_conversation_keeps_full_context(client, monkeypatch)
             yield encode_text_delta('Could you rephrase that so I can help?')
             yield encode_finish()
 
-    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.post_chat.OpenRouterAgent', FakeAgent)
 
     token_response = client.post(
         '/api/auth/token',
@@ -662,8 +759,8 @@ def test_post_api_chat_handles_quick_successive_messages_without_merged_token(cl
             FakeAgent.seen_prompts.append(prompt)
             yield 'debounced-assistant-response'
 
-    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
-    monkeypatch.setattr('chatbot.features.chat.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0.2)
+    monkeypatch.setattr('chatbot.features.chat.api.post_chat.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.post_chat.CHAT_DEBOUNCE_WINDOW_SECONDS', 0.2)
 
     token_response = client.post(
         '/api/auth/token',
@@ -760,8 +857,8 @@ def test_post_api_chat_defers_connective_fragments_until_meaningful_message(clie
             FakeAgent.seen_prompts.append(prompt)
             yield 'fragment-merged-response'
 
-    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
-    monkeypatch.setattr('chatbot.features.chat.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
+    monkeypatch.setattr('chatbot.features.chat.api.post_chat.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.post_chat.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
 
     token_response = client.post(
         '/api/auth/token',
@@ -823,8 +920,8 @@ def test_post_api_chat_request_id_is_idempotent_for_retried_turn(client, monkeyp
             FakeAgent.seen_prompts.append(prompt)
             yield 'idempotent-response'
 
-    monkeypatch.setattr('chatbot.features.chat.api.OpenRouterAgent', FakeAgent)
-    monkeypatch.setattr('chatbot.features.chat.api.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
+    monkeypatch.setattr('chatbot.features.chat.api.post_chat.OpenRouterAgent', FakeAgent)
+    monkeypatch.setattr('chatbot.features.chat.api.post_chat.CHAT_DEBOUNCE_WINDOW_SECONDS', 0)
 
     token_response = client.post(
         '/api/auth/token',

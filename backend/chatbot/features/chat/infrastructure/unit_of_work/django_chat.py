@@ -7,7 +7,7 @@ from typing import Any
 
 from django.db import IntegrityError, transaction
 
-from chatbot.features.chat.models import ChatMessage, ChatSession
+from chatbot.features.chat.models import ChatMessage, ChatSession, StructuredInteraction
 from chatbot.features.core.application.contracts import BaseUnitOfWork
 
 
@@ -138,3 +138,33 @@ class DjangoChatUnitOfWork(BaseUnitOfWork):
             'session_count': sessions.count(),
             'message_count': message_count,
         }
+
+    def get_structured_interaction_selection(
+        self,
+        *,
+        user_id: int,
+        interaction_id: str,
+    ) -> dict[str, Any] | None:
+        row = StructuredInteraction.objects.filter(
+            user_id=user_id,
+            interaction_id=interaction_id,
+        ).first()
+        return row.selection if row is not None else None
+
+    def save_structured_interaction_selection(
+        self,
+        *,
+        user_id: int,
+        interaction_id: str,
+        kind: str,
+        selection: dict[str, Any],
+    ) -> dict[str, Any]:
+        row, _ = StructuredInteraction.objects.update_or_create(
+            user_id=user_id,
+            interaction_id=interaction_id,
+            defaults={
+                'kind': kind,
+                'selection': selection,
+            },
+        )
+        return row.selection

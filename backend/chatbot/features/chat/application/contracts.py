@@ -45,3 +45,19 @@ class ChatUnitOfWork(Protocol):
     def list_user_sessions_prefetched(self, *, user_id: int) -> list[Any]: ...
 
     def get_history_sync_payload(self, *, user_id: int) -> dict[str, object]: ...
+
+    def get_structured_interaction_selection(
+        self,
+        *,
+        user_id: int,
+        interaction_id: str,
+    ) -> dict[str, Any] | None: ...
+
+    def save_structured_interaction_selection(
+        self,
+        *,
+        user_id: int,
+        interaction_id: str,
+        kind: str,
+        selection: dict[str, Any],
+    ) -> dict[str, Any]: ...
