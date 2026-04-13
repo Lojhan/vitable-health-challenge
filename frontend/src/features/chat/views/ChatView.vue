@@ -1,7 +1,7 @@
 <script setup>
 import Button from "primevue/button";
+import { computed } from "vue";
 
-import ThemePreferenceControl from "../../../components/ThemePreferenceControl.vue";
 import { useAuthStore } from "../../auth/stores/auth";
 import { useChatStore } from "../../../stores/chat";
 import ChatComposer from "../components/ChatComposer.vue";
@@ -11,6 +11,16 @@ import { useChatScreenController } from "../composables/useChatScreenController"
 
 const authStore = useAuthStore();
 const chatStore = useChatStore();
+
+const profileLabel = computed(() =>
+  authStore.isAuthenticated ? "Profile" : "Guest"
+);
+
+const profileCaption = computed(() =>
+  authStore.isAuthenticated
+    ? "Theme and session settings"
+    : "Read-only preferences"
+);
 
 const {
   inputMessage,
@@ -59,13 +69,16 @@ const {
         :is-loading-history="isLoadingHistory"
         :is-loading-more-history="isLoadingMoreHistory"
         :format-conversation-date="formatConversationDate"
+        :profile-label="profileLabel"
+        :profile-caption="profileCaption"
         @close="closeSidebar"
         @new-conversation="handleNewConversation"
         @request-more="handleLoadMoreHistory"
         @select-conversation="handleSelectConversation"
+        @logout="authStore.logout"
       />
 
-      <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div class="flex min-w-0 flex-1 flex-col overflow-hidden relative">
         <header
           class="chat-header sticky top-0 z-20 flex items-center justify-between gap-3 border-b px-4 py-3 backdrop-blur"
         >
@@ -94,8 +107,6 @@ const {
           </div>
 
           <div class="flex items-center gap-2">
-            <ThemePreferenceControl />
-
             <div ref="headerMenuRoot" class="relative">
             <Button
               icon="pi pi-ellipsis-v"
@@ -131,14 +142,6 @@ const {
                   @click="handleClearChat"
                 >
                   Clear current conversation
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  class="chat-menu__item chat-menu__item--danger mt-1 block w-full rounded-md px-3 py-2 text-left text-sm"
-                  @click="authStore.logout"
-                >
-                  Logout
                 </button>
               </div>
             </transition>
@@ -211,16 +214,6 @@ const {
 .chat-menu__item:hover {
   background: var(--app-surface-2);
   color: var(--app-text-primary);
-}
-
-.chat-menu__item--danger {
-  background: color-mix(in srgb, var(--app-danger-500) 12%, transparent);
-  color: var(--app-danger-700);
-}
-
-.chat-menu__item--danger:hover {
-  background: color-mix(in srgb, var(--app-danger-500) 18%, transparent);
-  color: var(--app-danger-800);
 }
 
 .alert-banner {

@@ -173,4 +173,22 @@ describe('ChatView', () => {
 		vi.useRealTimers()
 	})
 
+	it('opens profile settings from the sidebar footer and logs out from the popup', async () => {
+		authStore.isAuthenticated = true
+
+		const wrapper = mountChatView()
+		const profileTrigger = wrapper.get('[data-testid="sidebar-profile-trigger"]')
+
+		await profileTrigger.trigger('click')
+
+		expect(wrapper.get('[data-testid="sidebar-profile-menu"]').text()).toContain('Theme preference')
+
+		const logoutButton = wrapper.findAll('button').find((candidate) => candidate.text().includes('Logout'))
+		expect(logoutButton).toBeTruthy()
+
+		await logoutButton.trigger('click')
+
+		expect(authStore.logout).toHaveBeenCalledTimes(1)
+	})
+
 })

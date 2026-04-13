@@ -1,6 +1,7 @@
 <script setup>
 import Button from 'primevue/button'
 
+import ChatSidebarProfileMenu from './ChatSidebarProfileMenu.vue'
 import ChatSidebarHistoryList from './ChatSidebarHistoryList.vue'
 
 defineProps({
@@ -32,9 +33,17 @@ defineProps({
 		type: Function,
 		required: true,
 	},
+	profileLabel: {
+		type: String,
+		default: 'Profile',
+	},
+	profileCaption: {
+		type: String,
+		default: 'Theme and session settings',
+	},
 })
 
-const emit = defineEmits(['close', 'new-conversation', 'request-more', 'select-conversation'])
+const emit = defineEmits(['close', 'new-conversation', 'request-more', 'select-conversation', 'logout'])
 </script>
 
 <template>
@@ -79,6 +88,12 @@ const emit = defineEmits(['close', 'new-conversation', 'request-more', 'select-c
 			:format-conversation-date="formatConversationDate"
 			@request-more="emit('request-more')"
 			@select-conversation="emit('select-conversation', $event)"
+		/>
+
+		<ChatSidebarProfileMenu
+			:profile-label="profileLabel"
+			:profile-caption="profileCaption"
+			@logout="emit('logout')"
 		/>
 	</aside>
 </template>
