@@ -45,7 +45,7 @@ async function submitForm() {
 				autocomplete="username"
 				aria-required="true"
 				:invalid="usernameInvalid"
-				class="w-full"
+				class="app-themed-input w-full"
 				@blur="markTouched('username')"
 			/>
 		</AuthField>
@@ -67,7 +67,7 @@ async function submitForm() {
 				:invalid="passwordInvalid"
 				toggle-mask
 				fluid
-				class="w-full"
+				class="app-themed-input w-full"
 				@blur="markTouched('password')"
 			/>
 		</AuthField>
@@ -86,15 +86,15 @@ async function submitForm() {
 			:disabled="isSubmitting"
 			:loading="isSubmitting"
 			label="Authenticate"
-			class="w-full border-primary! bg-primary! hover:border-emerald-800! hover:bg-emerald-800!"
+			class="auth-submit-button w-full"
 			aria-label="Sign in to your account"
 		/>
 
-		<p class="m-0 text-center text-sm leading-6 text-slate-500">
+		<p class="structured-meta m-0 text-center text-sm leading-6">
 			New here?
 			<button
 				type="button"
-				class="border-0 bg-transparent p-0 font-semibold text-indigo-600 underline decoration-indigo-200 underline-offset-4 transition hover:text-indigo-800 focus-visible:outline-indigo-400"
+				class="auth-inline-link border-0 bg-transparent p-0 font-semibold underline underline-offset-4 transition focus-visible:outline-indigo-400"
 				@click="emit('switch-mode')"
 			>
 				Create an account

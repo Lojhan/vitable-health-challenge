@@ -1,4 +1,5 @@
 import { mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { nextTick, reactive } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -77,6 +78,14 @@ vi.mock('primevue/inputtext', async () => {
 })
 
 describe('ChatView', () => {
+	function mountChatView() {
+		return mount(ChatView, {
+			global: {
+				plugins: [createPinia()],
+			},
+		})
+	}
+
 	beforeEach(() => {
 		authStore.isAuthenticated = false
 		authStore.logout.mockClear()
@@ -102,19 +111,19 @@ describe('ChatView', () => {
 
 	it('initializes a fresh chat screen on mount when authenticated', async () => {
 		authStore.isAuthenticated = true
-		mount(ChatView)
+		mountChatView()
 		await nextTick()
 
 		expect(chatStore.initializeChatScreen).toHaveBeenCalledTimes(1)
 	})
 
 	it('renders existing messages', () => {
-		const wrapper = mount(ChatView)
+		const wrapper = mountChatView()
 		expect(wrapper.text()).toContain('hello')
 	})
 
 	it('submits new message through chat store', async () => {
-		const wrapper = mount(ChatView)
+		const wrapper = mountChatView()
 		const input = wrapper.find('input[placeholder="Type your symptoms..."]')
 
 		await input.setValue('i need help')
@@ -139,7 +148,7 @@ describe('ChatView', () => {
 			},
 		]
 
-		const wrapper = mount(ChatView)
+		const wrapper = mountChatView()
 
 		await vi.runAllTimersAsync()
 		await nextTick()

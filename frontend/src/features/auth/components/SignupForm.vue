@@ -51,7 +51,7 @@ async function submitForm() {
 				autocomplete="given-name"
 				aria-required="true"
 				:invalid="firstNameInvalid"
-				class="w-full"
+				class="app-themed-input w-full"
 				@blur="markTouched('firstName')"
 			/>
 		</AuthField>
@@ -71,7 +71,7 @@ async function submitForm() {
 				autocomplete="email"
 				aria-required="true"
 				:invalid="emailInvalid"
-				class="w-full"
+				class="app-themed-input w-full"
 				@blur="markTouched('email')"
 			/>
 		</AuthField>
@@ -93,7 +93,7 @@ async function submitForm() {
 				:invalid="passwordInvalid"
 				toggle-mask
 				fluid
-				class="w-full"
+				class="app-themed-input w-full"
 				@blur="markTouched('password')"
 			/>
 		</AuthField>
@@ -115,7 +115,7 @@ async function submitForm() {
 				aria-required="true"
 				data-testid="tier-select"
 				:invalid="insuranceTierInvalid"
-				class="w-full"
+				class="app-themed-input w-full"
 				@blur="markTouched('insuranceTier')"
 			/>
 		</AuthField>
@@ -134,15 +134,15 @@ async function submitForm() {
 			:disabled="isSubmitting"
 			:loading="isSubmitting"
 			label="Create account"
-			class="w-full border-primary! bg-primary! hover:border-emerald-800! hover:bg-emerald-800!"
+			class="auth-submit-button w-full"
 			aria-label="Create your account"
 		/>
 
-		<p class="m-0 text-center text-sm leading-6 text-slate-500">
+		<p class="structured-meta m-0 text-center text-sm leading-6">
 			Already have an account?
 			<button
 				type="button"
-				class="border-0 bg-transparent p-0 font-semibold text-indigo-600 underline decoration-indigo-200 underline-offset-4 transition hover:text-indigo-800 focus-visible:outline-indigo-400"
+				class="auth-inline-link border-0 bg-transparent p-0 font-semibold underline underline-offset-4 transition focus-visible:outline-indigo-400"
 				@click="emit('switch-mode')"
 			>
 				Sign in

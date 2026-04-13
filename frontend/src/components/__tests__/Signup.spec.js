@@ -1,4 +1,5 @@
 import { mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { reactive } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import SignupView from '../../features/auth/views/SignupView.vue'
@@ -118,7 +119,11 @@ vi.mock('primevue/button', async () => {
 })
 
 const mountSignup = () =>
-  mount(SignupView)
+  mount(SignupView, {
+    global: {
+      plugins: [createPinia()],
+    },
+  })
 
 describe('Signup', () => {
   it('renders Insurance Plan Tier label', () => {

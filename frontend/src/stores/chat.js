@@ -3,6 +3,13 @@ import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { apiClient, getApiBaseUrl } from '../lib/apiClient'
+import {
+  buildCacheKey,
+  clearCachedEntriesByPrefix,
+  getCachedValue,
+  removeCachedValue,
+  setCachedValue,
+} from '../lib/cache'
 import { useAuthStore } from '../features/auth/stores/auth'
 
 const FRONTEND_BURST_WINDOW_MS = 1000
@@ -10,6 +17,11 @@ const HISTORY_PAGE_SIZE = 20
 const FRONTEND_BURST_SEPARATOR_TOKEN = '<USER_MESSAGE_BURST_SEPARATOR>'
 const AUTH_REFRESH_FAILED_ERROR = 'AUTH_REFRESH_FAILED'
 const MERGED_IN_PREVIOUS_RESPONSE_TOKEN = '<MERGED_IN_PREVIOUS_RESPONSE>'
+const CHAT_CACHE_PREFIX = buildCacheKey('chat')
+const CHAT_HISTORY_CACHE_PREFIX = buildCacheKey(CHAT_CACHE_PREFIX, 'history')
+const CHAT_SESSION_CACHE_PREFIX = buildCacheKey(CHAT_CACHE_PREFIX, 'session')
+const HISTORY_PAGE_TTL_MS = 60_000
+const SESSION_DETAIL_TTL_MS = 120_000
 let messageCounter = 0
 let conversationCounter = 0
 let streamActivityCounter = 0
@@ -51,6 +63,14 @@ function buildConversationTitle(prompt) {
     return 'New conversation'
   }
   return normalized.slice(0, 42)
+}
+
+function buildHistoryCacheKey(cursor) {
+  return buildCacheKey(CHAT_HISTORY_CACHE_PREFIX, cursor == null ? 'initial' : cursor)
+}
+
+function buildSessionCacheKey(nextSessionId) {
+  return buildCacheKey(CHAT_SESSION_CACHE_PREFIX, nextSessionId)
 }
 
 function compareConversationsByUpdatedAt(left, right) {
@@ -346,6 +366,32 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function buildServerConversationPayload(conversation) {
+    return {
+      id: conversation.sessionId,
+      title: conversation.title,
+      created_at: conversation.createdAt,
+      updated_at: conversation.updatedAt,
+      messages: (conversation.messages ?? []).map((message) => ({
+        role: message.role,
+        message_kind: message.messageKind ?? 'text',
+        content: message.content,
+      })),
+    }
+  }
+
+  function cacheConversationDetail(conversation) {
+    if (conversation?.sessionId == null) {
+      return
+    }
+
+    setCachedValue(
+      buildSessionCacheKey(conversation.sessionId),
+      buildServerConversationPayload(conversation),
+      SESSION_DETAIL_TTL_MS,
+    )
+  }
+
   const conversationSummaries = computed(() => (
     (() => {
       const loadedSessionIds = new Set()
@@ -437,6 +483,7 @@ export const useChatStore = defineStore('chat', () => {
     historySummaries.value = historySummaries.value.filter(
       (summary) => summary.sessionId !== sessionIdentifier,
     )
+    clearCachedEntriesByPrefix(CHAT_HISTORY_CACHE_PREFIX)
   }
 
   function mergeHistorySummaries(nextSummaries, { reset = false } = {}) {
@@ -465,6 +512,11 @@ export const useChatStore = defineStore('chat', () => {
 
   function hydrateConversationFromServer(session) {
     const normalizedConversation = normalizeServerConversation(session)
+    setCachedValue(
+      buildSessionCacheKey(normalizedConversation.sessionId),
+      session,
+      SESSION_DETAIL_TTL_MS,
+    )
     const existingConversation = conversations.value.find(
       (conversation) => conversation.sessionId === normalizedConversation.sessionId,
     )
@@ -478,11 +530,13 @@ export const useChatStore = defineStore('chat', () => {
         messages.value = existingConversation.messages
         sessionId.value = existingConversation.sessionId
       }
+      cacheConversationDetail(existingConversation)
       syncConversationSummary(existingConversation)
       return existingConversation
     }
 
     conversations.value.unshift(normalizedConversation)
+    cacheConversationDetail(normalizedConversation)
     syncConversationSummary(normalizedConversation)
     return normalizedConversation
   }
@@ -509,12 +563,27 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     try {
+      const cacheKey = buildHistoryCacheKey(reset ? null : historyNextCursor.value)
+      const cachedPayload = getCachedValue(cacheKey)
+      if (cachedPayload && typeof cachedPayload === 'object') {
+        const cachedSessions = Array.isArray(cachedPayload.sessions)
+          ? cachedPayload.sessions.map(normalizeServerSummary)
+          : []
+
+        mergeHistorySummaries(cachedSessions, { reset })
+        historyNextCursor.value = cachedPayload.next_cursor ?? null
+        historyHasMore.value = Boolean(cachedPayload.has_more)
+        return
+      }
+
       const response = await fetchWithAuthRecovery(() => apiClient.get('/api/chat/history', {
         params: {
           page_size: HISTORY_PAGE_SIZE,
           ...(reset ? {} : { cursor: historyNextCursor.value }),
         },
       }))
+
+      setCachedValue(cacheKey, response.data, HISTORY_PAGE_TTL_MS)
 
       const serverSessions = Array.isArray(response.data?.sessions)
         ? response.data.sessions.map(normalizeServerSummary)
@@ -557,6 +626,16 @@ export const useChatStore = defineStore('chat', () => {
       return loadedConversation
     }
 
+    const cachedSession = getCachedValue(buildSessionCacheKey(nextSessionId))
+    if (cachedSession && typeof cachedSession === 'object') {
+      const hydratedConversation = hydrateConversationFromServer(cachedSession)
+      setCurrentConversationById(hydratedConversation.id)
+      streamError.value = ''
+      emergencyOverride.value = false
+      clearStreamActivities()
+      return hydratedConversation
+    }
+
     const response = await fetchWithAuthRecovery(
       () => apiClient.get(`/api/chat/sessions/${nextSessionId}`),
     )
@@ -597,6 +676,7 @@ export const useChatStore = defineStore('chat', () => {
     activeConversation.updatedAt = new Date().toISOString()
     activeConversation.messages = messages.value
     activeConversation.sessionId = sessionId.value
+    cacheConversationDetail(activeConversation)
     if (activeConversation.sessionId != null) {
       syncConversationSummary(activeConversation)
     }
@@ -628,6 +708,7 @@ export const useChatStore = defineStore('chat', () => {
     activeConversation.sessionId = nextSessionId
     activeConversation.updatedAt = new Date().toISOString()
     activeConversationId.value = permanentId
+    cacheConversationDetail(activeConversation)
     syncConversationSummary(activeConversation)
   }
 
@@ -977,6 +1058,7 @@ export const useChatStore = defineStore('chat', () => {
     () => authStore.token,
     (nextToken) => {
       if (!nextToken) {
+        clearCachedEntriesByPrefix(CHAT_CACHE_PREFIX)
         conversations.value = []
         historySummaries.value = []
         messages.value = []
@@ -1033,6 +1115,7 @@ export const useChatStore = defineStore('chat', () => {
     clearStreamActivities()
 
     if (selectedSessionId != null) {
+      removeCachedValue(buildSessionCacheKey(selectedSessionId))
       removeHistorySummary(selectedSessionId)
     }
 

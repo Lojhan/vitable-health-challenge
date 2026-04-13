@@ -34,15 +34,15 @@ function dayCircleClasses(day) {
 	}
 
 	if (day.is_available) {
-		return 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+		return 'structured-chip border hover:bg-[color:var(--app-structured-accent-bg)]'
 	}
 
-	return 'bg-transparent text-slate-300'
+	return 'bg-transparent text-[color:var(--app-slate-400)]'
 }
 </script>
 
 <template>
-	<div v-if="props.showDateSelection" class="grid grid-cols-7 text-center text-[0.68rem] font-semibold uppercase tracking-[0.08em] text-slate-500">
+	<div v-if="props.showDateSelection" class="structured-meta grid grid-cols-7 text-center text-[0.68rem] font-semibold uppercase tracking-[0.08em]">
 		<span v-for="weekday in props.weekDayHeaders" :key="weekday">{{ weekday }}</span>
 	</div>
 

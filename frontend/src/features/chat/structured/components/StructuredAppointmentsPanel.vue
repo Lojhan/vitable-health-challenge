@@ -28,13 +28,13 @@ const hasAppointments = computed(() => Array.isArray(props.payload?.data?.appoin
 
 <template>
 	<div class="grid gap-3">
-		<div v-if="isProgressState" class="grid gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 shadow-sm">
+		<div v-if="isProgressState" class="structured-panel grid gap-3 rounded-xl border px-3.5 py-3">
 			<div class="flex items-center justify-between gap-2">
-				<p class="m-0 text-xs font-semibold uppercase tracking-[0.14em] text-indigo-600">Upcoming appointments</p>
-				<p class="m-0 text-xs text-slate-500">{{ progressLabel }}</p>
+				<p class="structured-heading m-0 text-xs font-semibold uppercase tracking-[0.14em]">Upcoming appointments</p>
+				<p class="structured-meta m-0 text-xs">{{ progressLabel }}</p>
 			</div>
 			<div class="grid gap-2.5">
-				<div v-for="index in 2" :key="index" class="rounded-md border border-slate-200 bg-slate-50 px-3 py-3">
+				<div v-for="index in 2" :key="index" class="structured-subtle rounded-md border px-3 py-3">
 					<div class="h-3 w-40 rounded-full bg-slate-200 state-skeleton-line" />
 					<div class="mt-2 h-2.5 w-32 rounded-full bg-slate-200 state-skeleton-line state-skeleton-line-delay" />
 					<div class="mt-3 h-2.5 w-full rounded-full bg-slate-200 state-skeleton-line" />
@@ -43,46 +43,46 @@ const hasAppointments = computed(() => Array.isArray(props.payload?.data?.appoin
 			</div>
 		</div>
 
-		<div v-else-if="isErrorState" class="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-800">
-			<p class="m-0 text-xs font-semibold uppercase tracking-[0.14em] text-rose-700">Appointments unavailable</p>
+		<div v-else-if="isErrorState" class="structured-danger structured-danger-text rounded-lg border px-3.5 py-3 text-sm">
+			<p class="structured-danger-text m-0 text-xs font-semibold uppercase tracking-[0.14em]">Appointments unavailable</p>
 			<p class="m-0 mt-1.5">{{ errorMessage }}</p>
 		</div>
 
 		<template v-else>
 		<div class="flex items-center justify-between gap-2">
-			<p class="m-0 text-xs font-semibold uppercase tracking-[0.14em] text-indigo-600">Upcoming appointments</p>
-			<p class="m-0 text-xs text-slate-500">{{ appointmentCountLabel }}</p>
+			<p class="structured-heading m-0 text-xs font-semibold uppercase tracking-[0.14em]">Upcoming appointments</p>
+			<p class="structured-meta m-0 text-xs">{{ appointmentCountLabel }}</p>
 		</div>
 
 		<ul v-if="hasAppointments" class="m-0 mt-0.5 grid gap-2.5 p-0 list-none">
 			<li
 				v-for="appointment in payload.data.appointments"
 				:key="appointment.appointment_id"
-				class="rounded-md border border-slate-200 bg-white px-3 py-3"
+				class="structured-card rounded-md border px-3 py-3"
 			>
-				<div class="flex items-start justify-between gap-3 border-b border-slate-100 pb-2">
+				<div class="flex items-start justify-between gap-3 border-b border-[color:var(--app-border-subtle)] pb-2">
 					<div class="min-w-0">
-						<p class="m-0 text-sm font-semibold text-slate-900">{{ safeText(appointment.title, 'Appointment') }} {{ appointment.provider_name ? 'with' : '' }} {{ safeText(appointment.provider_name, 'Unknown Provider') }}</p>
-						<p class="m-0 mt-1 text-xs text-slate-600">{{ safeText(appointment.time_slot_human_utc, appointment.time_slot) }}</p>
+						<p class="structured-title m-0 text-sm font-semibold">{{ safeText(appointment.title, 'Appointment') }} {{ appointment.provider_name ? 'with' : '' }} {{ safeText(appointment.provider_name, 'Unknown Provider') }}</p>
+						<p class="structured-meta m-0 mt-1 text-xs">{{ safeText(appointment.time_slot_human_utc, appointment.time_slot) }}</p>
 					</div>
 				</div>
 
 				<div class="mt-2 grid gap-1.5">
 					<div class="grid grid-cols-[5.5rem_1fr] items-start gap-2 text-xs">
-						<p class="m-0 font-semibold text-slate-700">Reason</p>
-						<p class="m-0 text-slate-600">{{ safeText(appointment.appointment_reason) }}</p>
+						<p class="structured-copy-strong m-0 font-semibold">Reason</p>
+						<p class="structured-meta m-0">{{ safeText(appointment.appointment_reason) }}</p>
 					</div>
 					<div class="grid grid-cols-[5.5rem_1fr] items-start gap-2 text-xs">
-						<p class="m-0 font-semibold text-slate-700">Symptoms</p>
-						<p class="m-0 text-slate-600">{{ safeText(appointment.symptoms_summary) }}</p>
+						<p class="structured-copy-strong m-0 font-semibold">Symptoms</p>
+						<p class="structured-meta m-0">{{ safeText(appointment.symptoms_summary) }}</p>
 					</div>
 				</div>
 			</li>
 		</ul>
 
-		<div v-else class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center">
-			<p class="m-0 text-sm font-medium text-slate-700">No upcoming appointments yet</p>
-			<p class="m-0 mt-1 text-xs text-slate-500">When appointments are booked, they will appear here in this timeline.</p>
+		<div v-else class="structured-subtle rounded-lg border border-dashed px-3 py-4 text-center">
+			<p class="structured-copy-strong m-0 text-sm font-medium">No upcoming appointments yet</p>
+			<p class="structured-meta m-0 mt-1 text-xs">When appointments are booked, they will appear here in this timeline.</p>
 		</div>
 		</template>
 	</div>

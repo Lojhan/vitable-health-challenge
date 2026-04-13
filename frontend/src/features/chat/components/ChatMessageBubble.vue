@@ -32,7 +32,7 @@ const bubbleClasses = computed(() => {
 		return 'ml-auto bg-indigo-600 text-white rounded-[0.85rem] rounded-br-sm user-bubble'
 	}
 
-	return 'bg-white text-slate-800 border border-slate-200 rounded-[0.85rem] rounded-bl-sm assistant-bubble'
+	return 'assistant-bubble rounded-[0.85rem] rounded-bl-sm border'
 })
 
 watch(
@@ -68,6 +68,12 @@ watch(
 </template>
 
 <style scoped>
+.assistant-bubble {
+	background: var(--app-surface-1);
+	border-color: var(--app-border-subtle);
+	color: var(--app-text-primary);
+}
+
 .assistant-stream-fragment {
 	animation: assistant-token-fade 180ms ease-out;
 }

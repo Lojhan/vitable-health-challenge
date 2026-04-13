@@ -113,10 +113,10 @@ watch(isMobile, (mobile) => {
 
 <template>
 	<div class="grid gap-3">
-		<div v-if="isProgressState" class="grid gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 shadow-sm">
+		<div v-if="isProgressState" class="structured-panel grid gap-3 rounded-xl border px-3.5 py-3">
 			<div class="flex items-center justify-between gap-2">
-				<p class="m-0 text-xs font-semibold uppercase tracking-[0.14em] text-indigo-600">Availability calendar</p>
-				<p class="m-0 text-xs text-slate-500">{{ progressLabel }}</p>
+				<p class="structured-heading m-0 text-xs font-semibold uppercase tracking-[0.14em]">Availability calendar</p>
+				<p class="structured-meta m-0 text-xs">{{ progressLabel }}</p>
 			</div>
 			<div class="grid gap-2">
 				<div class="grid grid-cols-7 gap-1.5">
@@ -128,28 +128,28 @@ watch(isMobile, (mobile) => {
 			</div>
 		</div>
 
-		<div v-else-if="isErrorState" class="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-800">
-			<p class="m-0 text-xs font-semibold uppercase tracking-[0.14em] text-rose-700">Availability unavailable</p>
+		<div v-else-if="isErrorState" class="structured-danger structured-danger-text rounded-lg border px-3.5 py-3 text-sm">
+			<p class="structured-danger-text m-0 text-xs font-semibold uppercase tracking-[0.14em]">Availability unavailable</p>
 			<p class="m-0 mt-1.5">{{ errorMessage }}</p>
 		</div>
 
 		<template v-else>
-		<div v-if="isLoadingSavedSelection" class="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+		<div v-if="isLoadingSavedSelection" class="structured-subtle rounded-md border p-3 text-xs">
 			Loading your previous slot selection...
 		</div>
 
-		<div v-else-if="hasPastSelection" class="rounded-md border border-emerald-200 bg-emerald-50 p-3">
-			<p class="m-0 text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Selected availability</p>
-			<p class="m-0 mt-1 text-sm font-semibold text-emerald-900">
+		<div v-else-if="hasPastSelection" class="structured-success rounded-md border p-3">
+			<p class="structured-success-text m-0 text-xs font-semibold uppercase tracking-[0.12em]">Selected availability</p>
+			<p class="structured-success-text m-0 mt-1 text-sm font-semibold">
 				{{ selectedSlotSelection.day_human }} at {{ selectedSlotSelection.slot_label }}
 			</p>
-			<p class="m-0 mt-0.5 text-xs text-emerald-800">Timezone: {{ selectedSlotSelection.timezone }}</p>
-			<p class="m-0 mt-1 text-xs text-emerald-700">This step is completed for this message.</p>
+			<p class="structured-success-text m-0 mt-0.5 text-xs">Timezone: {{ selectedSlotSelection.timezone }}</p>
+			<p class="structured-success-text m-0 mt-1 text-xs">This step is completed for this message.</p>
 		</div>
 
 		<div class="flex items-center justify-between gap-2">
-			<p class="m-0 text-xs font-semibold uppercase tracking-[0.14em] text-indigo-600">Availability calendar</p>
-			<p class="m-0 text-xs text-slate-500">{{ totalSlots }} slots · {{ safeText(timezone, 'UTC') }}</p>
+			<p class="structured-heading m-0 text-xs font-semibold uppercase tracking-[0.14em]">Availability calendar</p>
+			<p class="structured-meta m-0 text-xs">{{ totalSlots }} slots · {{ safeText(timezone, 'UTC') }}</p>
 		</div>
 
 		<div class="p-2">
@@ -164,7 +164,7 @@ watch(isMobile, (mobile) => {
 						@next-month="!hasPastSelection && goToNextMonth()"
 					/>
 
-					<div v-if="isLoadingCalendar" class="px-1 py-2 text-xs text-slate-600">
+					<div v-if="isLoadingCalendar" class="structured-meta px-1 py-2 text-xs">
 						Loading calendar...
 					</div>
 
@@ -194,8 +194,8 @@ watch(isMobile, (mobile) => {
 
 				<div v-if="desktopMode" class="w-full p-3 md:w-68 md:pt-11">
 					<div v-if="showTimeSelection">
-						<p class="text-sm font-semibold text-slate-900">{{ selectedDayTitle || 'Select a day' }}</p>
-						<p v-if="selectedDayHumanDate" class="m-0 mt-0.5 text-xs text-slate-500">{{ selectedDayHumanDate }}</p>
+						<p class="structured-title text-sm font-semibold">{{ selectedDayTitle || 'Select a day' }}</p>
+						<p v-if="selectedDayHumanDate" class="structured-meta m-0 mt-0.5 text-xs">{{ selectedDayHumanDate }}</p>
 
 						<div class="mt-3">
 							<StructuredAvailabilitySlotsList
@@ -210,14 +210,14 @@ watch(isMobile, (mobile) => {
 						</div>
 					</div>
 
-					<p v-else class="mt-1 text-right text-xs text-slate-500">
+					<p v-else class="structured-meta mt-1 text-right text-xs">
 						Select a date to continue.
 					</p>
 				</div>
 			</div>
 		</div>
 
-		<p v-if="payload.data.appointment_duration_note" class="m-0 text-xs text-slate-500">
+		<p v-if="payload.data.appointment_duration_note" class="structured-meta m-0 text-xs">
 			{{ payload.data.appointment_duration_note }}
 		</p>
 		</template>

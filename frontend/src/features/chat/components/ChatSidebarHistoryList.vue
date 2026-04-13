@@ -107,7 +107,7 @@ watch(
 	<nav class="flex-1 overflow-hidden px-2 py-2" aria-label="Past conversations">
 		<div
 			v-if="conversationSummaries.length === 0 && !isLoadingHistory"
-			class="px-2 pt-3 text-sm text-slate-500"
+			class="history-list__empty px-2 pt-3 text-sm"
 		>
 			Your past conversations will appear here.
 		</div>
@@ -138,11 +138,11 @@ watch(
 					<template v-if="virtualRow.index < conversationSummaries.length">
 						<button
 							type="button"
-							class="mb-1 w-full rounded-md border px-3 py-2 text-left transition"
+							class="history-list__button mb-1 w-full rounded-md border px-3 py-2 text-left transition"
 							:class="[
 								conversationSummaries[virtualRow.index].id === activeConversationId
-									? 'border-indigo-300 bg-indigo-50 text-indigo-900'
-									: 'border-transparent bg-transparent text-slate-700 hover:border-slate-200 hover:bg-slate-100',
+									? 'history-list__button--active'
+									: 'history-list__button--inactive',
 							]"
 							:aria-current="conversationSummaries[virtualRow.index].id === activeConversationId ? 'page' : undefined"
 							:aria-label="`Open conversation: ${conversationSummaries[virtualRow.index].title}`"
@@ -154,12 +154,12 @@ watch(
 								</p>
 								<span
 									v-if="conversationSummaries[virtualRow.index].isDraft"
-									class="rounded-full bg-white/80 px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-indigo-600"
+									class="history-list__draft-badge rounded-full px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-[0.12em]"
 								>
 									New
 								</span>
 							</div>
-							<p class="m-0 mt-0.5 text-xs text-slate-500">
+							<p class="history-list__meta m-0 mt-0.5 text-xs">
 								{{ formatConversationDate(conversationSummaries[virtualRow.index].updatedAt) }}
 							</p>
 						</button>
@@ -167,7 +167,7 @@ watch(
 
 					<div
 						v-else
-						class="flex h-full items-center justify-center px-3 text-xs font-medium uppercase tracking-[0.16em] text-slate-400"
+						class="history-list__loader flex h-full items-center justify-center px-3 text-xs font-medium uppercase tracking-[0.16em]"
 					>
 						<span v-if="isLoadingMoreHistory || isLoadingHistory">Loading more</span>
 						<span v-else>Scroll for more</span>
@@ -187,5 +187,33 @@ watch(
 
 .vertical-scroll-strip::-webkit-scrollbar {
 	display: none;
+}
+
+.history-list__empty,
+.history-list__meta,
+.history-list__loader {
+	color: var(--app-text-secondary);
+}
+
+.history-list__button--active {
+	border-color: color-mix(in srgb, var(--app-primary-500) 45%, var(--app-border-subtle));
+	background: color-mix(in srgb, var(--app-primary-500) 14%, var(--app-surface-1));
+	color: var(--app-text-primary);
+}
+
+.history-list__button--inactive {
+	border-color: transparent;
+	background: transparent;
+	color: var(--app-text-primary);
+}
+
+.history-list__button--inactive:hover {
+	border-color: var(--app-border-subtle);
+	background: var(--app-surface-2);
+}
+
+.history-list__draft-badge {
+	background: color-mix(in srgb, var(--app-surface-1) 82%, transparent);
+	color: var(--app-primary-600);
 }
 </style>

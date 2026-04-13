@@ -1,4 +1,15 @@
 import { apiClient } from '../../../../lib/apiClient'
+import {
+	buildCacheKey,
+	getCachedValue,
+	setCachedValue,
+} from '../../../../lib/cache'
+
+const STRUCTURED_STATE_TTL_MS = 60_000
+
+function buildStructuredInteractionCacheKey(interactionId) {
+	return buildCacheKey('chat', 'structured', interactionId)
+}
 
 export async function fetchStructuredInteractionState(interactionId) {
 	const key = String(interactionId ?? '').trim()
@@ -6,10 +17,19 @@ export async function fetchStructuredInteractionState(interactionId) {
 		return { interaction_id: '', selection: null }
 	}
 
+	const cachedResponse = getCachedValue(buildStructuredInteractionCacheKey(key))
+	if (cachedResponse && typeof cachedResponse === 'object') {
+		return cachedResponse
+	}
+
 	const response = await apiClient.get(
 		`/api/chat/structured-interactions/${encodeURIComponent(key)}`,
 	)
-	return response.data
+	return setCachedValue(
+		buildStructuredInteractionCacheKey(key),
+		response.data,
+		STRUCTURED_STATE_TTL_MS,
+	)
 }
 
 export async function saveStructuredInteractionState({ interactionId, kind, selection } = {}) {
@@ -23,5 +43,9 @@ export async function saveStructuredInteractionState({ interactionId, kind, sele
 		kind,
 		selection,
 	})
-	return response.data
+	return setCachedValue(
+		buildStructuredInteractionCacheKey(key),
+		response.data,
+		STRUCTURED_STATE_TTL_MS,
+	)
 }

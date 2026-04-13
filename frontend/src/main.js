@@ -5,10 +5,15 @@ import Aura from '@primevue/themes/aura'
 import 'primeicons/primeicons.css'
 import './style.css'
 import App from './App.vue'
+import { useThemeStore } from './stores/theme'
 
 const app = createApp(App)
+const pinia = createPinia()
+const themeStore = useThemeStore(pinia)
 
-app.use(createPinia())
+themeStore.initializeTheme()
+
+app.use(pinia)
 app.use(PrimeVue, {
 	theme: {
 		preset: Aura,

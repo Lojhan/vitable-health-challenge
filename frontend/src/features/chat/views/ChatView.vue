@@ -1,6 +1,7 @@
 <script setup>
 import Button from "primevue/button";
 
+import ThemePreferenceControl from "../../../components/ThemePreferenceControl.vue";
 import { useAuthStore } from "../../auth/stores/auth";
 import { useChatStore } from "../../../stores/chat";
 import ChatComposer from "../components/ChatComposer.vue";
@@ -66,7 +67,7 @@ const {
 
       <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
         <header
-          class="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-slate-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur"
+          class="chat-header sticky top-0 z-20 flex items-center justify-between gap-3 border-b px-4 py-3 backdrop-blur"
         >
           <div class="flex items-center gap-2.5">
             <div class="md:hidden">
@@ -92,7 +93,10 @@ const {
             </div>
           </div>
 
-          <div ref="headerMenuRoot" class="relative">
+          <div class="flex items-center gap-2">
+            <ThemePreferenceControl />
+
+            <div ref="headerMenuRoot" class="relative">
             <Button
               icon="pi pi-ellipsis-v"
               severity="secondary"
@@ -110,12 +114,12 @@ const {
                 v-if="headerMenuOpen"
                 role="menu"
                 aria-label="Chat actions"
-                class="absolute right-0 top-[calc(100%+0.35rem)] z-30 w-52 rounded-md border border-slate-200 bg-white p-1.5 shadow-lg"
+                class="chat-menu absolute right-0 top-[calc(100%+0.35rem)] z-30 w-52 rounded-md border p-1.5"
               >
                 <button
                   type="button"
                   role="menuitem"
-                  class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                  class="chat-menu__item block w-full rounded-md px-3 py-2 text-left text-sm"
                   @click="handleNewConversation"
                 >
                   Start new conversation
@@ -123,7 +127,7 @@ const {
                 <button
                   type="button"
                   role="menuitem"
-                  class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                  class="chat-menu__item block w-full rounded-md px-3 py-2 text-left text-sm"
                   @click="handleClearChat"
                 >
                   Clear current conversation
@@ -131,13 +135,14 @@ const {
                 <button
                   type="button"
                   role="menuitem"
-                  class="mt-1 block w-full rounded-md bg-rose-50 px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-100"
+                  class="chat-menu__item chat-menu__item--danger mt-1 block w-full rounded-md px-3 py-2 text-left text-sm"
                   @click="authStore.logout"
                 >
                   Logout
                 </button>
               </div>
             </transition>
+            </div>
           </div>
         </header>
 
@@ -146,10 +151,10 @@ const {
           role="alert"
           aria-live="assertive"
           aria-atomic="true"
-          class="mx-4 my-3 rounded-lg border-2 border-red-400 bg-red-50 p-4 text-red-900 shadow-md"
+          class="alert-banner mx-4 my-3 rounded-lg border-2 p-4 shadow-md"
         >
           <strong class="block text-base">EMERGENCY OVERRIDE ACTIVE</strong>
-          <p class="mt-1.5 mb-3.5 text-red-800">
+          <p class="alert-banner__copy mt-1.5 mb-3.5">
             Potential life-threatening symptoms detected. Call emergency
             services immediately.
           </p>
@@ -184,6 +189,48 @@ const {
 .emergency-bg {
   animation: pulse-alert 1.2s ease-in-out infinite;
   background-color: #fef2f2;
+}
+
+.chat-header {
+  border-color: var(--app-border-subtle);
+  background: var(--app-surface-0);
+  box-shadow: var(--app-shadow-soft);
+}
+
+.chat-menu {
+  border-color: var(--app-border-subtle);
+  background: var(--app-surface-1);
+  box-shadow: var(--app-shadow-soft);
+}
+
+.chat-menu__item {
+  color: var(--app-text-secondary);
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.chat-menu__item:hover {
+  background: var(--app-surface-2);
+  color: var(--app-text-primary);
+}
+
+.chat-menu__item--danger {
+  background: color-mix(in srgb, var(--app-danger-500) 12%, transparent);
+  color: var(--app-danger-700);
+}
+
+.chat-menu__item--danger:hover {
+  background: color-mix(in srgb, var(--app-danger-500) 18%, transparent);
+  color: var(--app-danger-800);
+}
+
+.alert-banner {
+  border-color: var(--app-alert-danger-border);
+  background: var(--app-alert-danger-bg);
+  color: var(--app-alert-danger-text);
+}
+
+.alert-banner__copy {
+  color: color-mix(in srgb, var(--app-alert-danger-text) 88%, white 12%);
 }
 
 @keyframes pulse-alert {

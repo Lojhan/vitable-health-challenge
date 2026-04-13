@@ -22,7 +22,7 @@ function updateValue(event) {
 
 <template>
 	<form
-		class="sticky bottom-0 z-20 border-t border-slate-200 bg-slate-50/95 px-3 py-3 backdrop-blur sm:px-4"
+		class="chat-composer sticky bottom-0 z-20 border-t px-3 py-3 backdrop-blur sm:px-4"
 		aria-label="Send a message"
 		@submit.prevent="emit('submit')"
 	>
@@ -36,7 +36,7 @@ function updateValue(event) {
 				:model-value="modelValue"
 				placeholder="Type your symptoms..."
 				aria-label="Describe your symptoms and current condition"
-				class="w-full border-slate-200! bg-white! text-slate-800! placeholder:text-slate-400!"
+				class="app-themed-input chat-composer__input w-full"
 				@input="updateValue"
 			/>
 			<Button
@@ -50,3 +50,11 @@ function updateValue(event) {
 		</div>
 	</form>
 </template>
+
+<style scoped>
+.chat-composer {
+	border-color: var(--app-border-subtle);
+	background: color-mix(in srgb, var(--app-surface-0) 94%, transparent);
+	box-shadow: 0 -16px 32px -28px rgba(15, 23, 42, 0.4);
+}
+</style>

@@ -1,5 +1,13 @@
+import {
+	buildCacheKey,
+	getCachedValue,
+	setCachedValue,
+} from '../../../../lib/cache'
+
 const MOCK_NETWORK_DELAY_MS = 180
 const STRUCTURED_SELECTIONS = new Map()
+const PROVIDERS_TTL_MS = 5 * 60_000
+const PROVIDER_PROFILE_TTL_MS = 10 * 60_000
 
 const PROVIDERS = [
 	{
@@ -145,22 +153,34 @@ export async function saveStructuredInteractionState({ interactionId, kind, sele
 // Mock endpoints designed to mirror future backend contracts.
 export async function fetchProviders({ specialty } = {}) {
 	const normalizedSpecialty = String(specialty ?? '').trim()
+	const cacheKey = buildCacheKey('chat', 'providers', normalizedSpecialty || 'All')
+	const cachedResponse = getCachedValue(cacheKey)
+	if (cachedResponse && typeof cachedResponse === 'object') {
+		return cachedResponse
+	}
+
 	const filtered = normalizedSpecialty && normalizedSpecialty !== 'All'
 		? PROVIDERS.filter((provider) => provider.specialty === normalizedSpecialty)
 		: PROVIDERS
 
-	return respond({
+	return respond(setCachedValue(cacheKey, {
 		endpoint: '/api/chat/providers',
 		providers: filtered,
 		specialties: ['All', ...new Set(PROVIDERS.map((provider) => provider.specialty))],
-	})
+	}, PROVIDERS_TTL_MS))
 }
 
 export async function fetchProviderProfile(providerId) {
+	const cacheKey = buildCacheKey('chat', 'provider-profile', providerId)
+	const cachedResponse = getCachedValue(cacheKey)
+	if (cachedResponse && typeof cachedResponse === 'object') {
+		return cachedResponse
+	}
+
 	const provider = PROVIDERS.find((candidate) => candidate.provider_id === providerId)
 	const profile = PROVIDER_PROFILES[providerId]
 
-	return respond({
+	return respond(setCachedValue(cacheKey, {
 		endpoint: `/api/chat/providers/${providerId}`,
 		provider,
 		profile: profile ?? {
@@ -168,6 +188,6 @@ export async function fetchProviderProfile(providerId) {
 			reviews: [],
 			pastAppointments: [],
 		},
-	})
+	}, PROVIDER_PROFILE_TTL_MS))
 }
 

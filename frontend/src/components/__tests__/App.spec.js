@@ -1,4 +1,5 @@
 import { mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { reactive } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import App from '../../App.vue'
@@ -61,7 +62,11 @@ vi.mock('primevue/button', async () => {
 
 describe('App', () => {
   it('renders the login experience by default', () => {
-    const wrapper = mount(App)
+    const wrapper = mount(App, {
+      global: {
+        plugins: [createPinia()],
+      },
+    })
 
     expect(wrapper.text()).toContain('Care navigation with a calmer front door.')
     expect(wrapper.text()).toContain('Sign in to continue symptom triage, scheduling, and billing-aware support from one operational surface.')

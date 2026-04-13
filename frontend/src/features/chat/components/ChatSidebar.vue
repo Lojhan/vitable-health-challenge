@@ -40,7 +40,7 @@ const emit = defineEmits(['close', 'new-conversation', 'request-more', 'select-c
 <template>
 	<button
 		v-if="sidebarOpen"
-		class="fixed inset-0 z-30 bg-slate-900/40 md:hidden"
+		class="sidebar-backdrop fixed inset-0 z-30 md:hidden"
 		type="button"
 		aria-label="Close conversation history"
 		@click="emit('close')"
@@ -48,15 +48,15 @@ const emit = defineEmits(['close', 'new-conversation', 'request-more', 'select-c
 
 	<aside
 		:class="[
-			'fixed inset-y-0 left-0 z-40 flex w-[82vw] max-w-[320px] flex-col border-r border-slate-200 bg-white shadow-xl transition-transform duration-300 md:static md:z-10 md:w-75 md:max-w-none md:shadow-none',
+			'chat-sidebar fixed inset-y-0 left-0 z-40 flex w-[82vw] max-w-[320px] flex-col border-r transition-transform duration-300 md:static md:z-10 md:w-75 md:max-w-none md:shadow-none',
 			sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
 		]"
 		aria-label="Conversation history"
 	>
-		<div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+		<div class="chat-sidebar__header flex items-center justify-between border-b px-4 py-3">
 			<div>
-				<p class="m-0 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">History</p>
-				<h2 class="m-0 text-lg font-semibold text-slate-900">Conversations</h2>
+				<p class="chat-sidebar__eyebrow m-0 text-xs font-semibold uppercase tracking-[0.14em]">History</p>
+				<h2 class="chat-sidebar__title m-0 text-lg font-semibold">Conversations</h2>
 			</div>
 			<Button
 				icon="pi pi-plus"
@@ -82,3 +82,27 @@ const emit = defineEmits(['close', 'new-conversation', 'request-more', 'select-c
 		/>
 	</aside>
 </template>
+
+<style scoped>
+.sidebar-backdrop {
+	background: var(--app-overlay);
+}
+
+.chat-sidebar {
+	border-color: var(--app-border-subtle);
+	background: var(--app-surface-1);
+	box-shadow: var(--app-shadow-soft);
+}
+
+.chat-sidebar__header {
+	border-color: var(--app-border-subtle);
+}
+
+.chat-sidebar__eyebrow {
+	color: var(--app-text-secondary);
+}
+
+.chat-sidebar__title {
+	color: var(--app-text-primary);
+}
+</style>

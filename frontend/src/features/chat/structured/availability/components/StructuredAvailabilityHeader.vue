@@ -22,7 +22,7 @@ const emit = defineEmits(['previous-month', 'next-month', 'back'])
 		<button
 			v-if="props.isMobileTimeStep"
 			type="button"
-			class="inline-flex cursor-pointer items-center gap-1 bg-transparent px-0 py-1 text-xs font-medium text-slate-600 hover:text-slate-900"
+			class="structured-meta inline-flex cursor-pointer items-center gap-1 bg-transparent px-0 py-1 text-xs font-medium hover:text-[color:var(--app-text-primary)]"
 			@click="emit('back')"
 		>
 			<span class="pi pi-chevron-left text-[0.7rem]" aria-hidden="true" />
@@ -31,19 +31,19 @@ const emit = defineEmits(['previous-month', 'next-month', 'back'])
 		<button
 			v-else
 			type="button"
-			class="inline-flex cursor-pointer items-center bg-transparent px-0 py-1 text-xs font-medium text-slate-600 hover:text-slate-900"
+			class="structured-meta inline-flex cursor-pointer items-center bg-transparent px-0 py-1 text-xs font-medium hover:text-[color:var(--app-text-primary)]"
 			aria-label="Previous month"
 			@click="emit('previous-month')"
 		>
 			<span class="pi pi-chevron-left text-[0.7rem]" aria-hidden="true" />
 		</button>
 
-		<p v-if="!isMobileTimeStep" class="text-sm font-semibold text-slate-900">{{ props.headerTitle }}</p>
+		<p v-if="!isMobileTimeStep" class="structured-title text-sm font-semibold">{{ props.headerTitle }}</p>
 
 		<button
 			v-if="!props.isMobileTimeStep"
 			type="button"
-			class="inline-flex cursor-pointer items-center bg-transparent px-0 py-1 text-xs font-medium text-slate-600 hover:text-slate-900"
+			class="structured-meta inline-flex cursor-pointer items-center bg-transparent px-0 py-1 text-xs font-medium hover:text-[color:var(--app-text-primary)]"
 			aria-label="Next month"
 			@click="emit('next-month')"
 		>
@@ -56,16 +56,16 @@ const emit = defineEmits(['previous-month', 'next-month', 'back'])
 		<div class="inline-flex items-center gap-10">
 			<button
 				type="button"
-				class="inline-flex cursor-pointer items-center bg-transparent px-0 py-1 text-xs font-medium text-slate-600 hover:text-slate-900"
+				class="structured-meta inline-flex cursor-pointer items-center bg-transparent px-0 py-1 text-xs font-medium hover:text-[color:var(--app-text-primary)]"
 				aria-label="Previous month"
 				@click="emit('previous-month')"
 			>
 				<span class="pi pi-chevron-left text-[0.7rem]" aria-hidden="true" />
 			</button>
-			<p class="text-sm font-semibold text-slate-900">{{ props.headerTitle }}</p>
+			<p class="structured-title text-sm font-semibold">{{ props.headerTitle }}</p>
 			<button
 				type="button"
-				class="inline-flex cursor-pointer items-center bg-transparent px-0 py-1 text-xs font-medium text-slate-600 hover:text-slate-900"
+				class="structured-meta inline-flex cursor-pointer items-center bg-transparent px-0 py-1 text-xs font-medium hover:text-[color:var(--app-text-primary)]"
 				aria-label="Next month"
 				@click="emit('next-month')"
 			>
