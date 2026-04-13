@@ -51,7 +51,7 @@ const options = [
 	font-size: 0.73rem;
 	font-weight: 600;
 	letter-spacing: 0.01em;
-	padding: 0.42rem 0.72rem;
+	padding: 0.22rem 0.52rem;
 	transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
 }
 
