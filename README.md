@@ -4,8 +4,13 @@ A full-stack healthcare AI triage chatbot. Patients describe symptoms in a chat 
 
 An example of the project running:
 
-https://github.com/user-attachments/assets/4fb1c588-0b3e-4380-bd15-d2a69e7268c8
+https://github.com/user-attachments/assets/03f95bb3-cebe-4d00-9fc1-6acfdb54464e
 
+<img width="2056" height="1290" alt="image" src="https://github.com/user-attachments/assets/b7a2378f-706a-4ded-bdbf-820f6e3a0fa5" />
+
+<img width="2056" height="1290" alt="image" src="https://github.com/user-attachments/assets/d564a997-2ef7-45b9-8bc5-338568ba2018" />
+
+<img width="2056" height="1290" alt="image" src="https://github.com/user-attachments/assets/c5ff112e-a5dd-4a4f-b5f9-61b486c244ec" />
 
 
 ---
